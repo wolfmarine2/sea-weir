@@ -1,0 +1,13 @@
+# 构建产物
+/target
+coverage/
+*.profraw
+*.profdata
+lcov.info
+
+# 测试 crate 是独立 workspace,锁文件不入库(生产 workspace 的 Cargo.lock 入库)
+Cargo.lock
+
+# 本地录制/覆盖文件(baseline 正式基线必须入库)
+cases/fixtures/baseline/*.local.json
+env/*.local.sh

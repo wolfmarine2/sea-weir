@@ -1,0 +1,51 @@
+{
+  "recorded_from": "new-api",
+  "recorded_at": "2026-09-11T01:36:03Z",
+  "newapi_version": "v0.0.0",
+  "endpoint": "POST /v1/messages",
+  "request": {
+    "method": "POST",
+    "path": "/v1/messages",
+    "header_names": [
+      "Authorization",
+      "Content-Type"
+    ],
+    "body": {
+      "model": "gpt-4",
+      "max_tokens": 16,
+      "messages": [
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ]
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "id": "chatcmpl-mock001",
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Hello!"
+        }
+      ],
+      "stop_reason": "end_turn",
+      "model": "gpt-4",
+      "usage": {
+        "input_tokens": 9,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 3,
+        "claude_cache_creation_5_m_tokens": 0,
+        "claude_cache_creation_1_h_tokens": 0
+      }
+    }
+  }
+}

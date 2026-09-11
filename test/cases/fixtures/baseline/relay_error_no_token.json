@@ -1,0 +1,35 @@
+{
+  "recorded_from": "new-api",
+  "recorded_at": "2026-09-11T01:36:03Z",
+  "newapi_version": "v0.0.0",
+  "endpoint": "POST /v1/chat/completions",
+  "request": {
+    "method": "POST",
+    "path": "/v1/chat/completions",
+    "header_names": [
+      "Content-Type"
+    ],
+    "body": {
+      "model": "gpt-4",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ]
+    }
+  },
+  "response": {
+    "status": 401,
+    "headers": {
+      "Content-Type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "error": {
+        "code": "",
+        "message": "Invalid token (request id: 202609110136055285365018268d9d6IzzoiJ8v)",
+        "type": "new_api_error"
+      }
+    }
+  }
+}

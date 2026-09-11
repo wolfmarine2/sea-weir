@@ -1,0 +1,61 @@
+# 重试与自动禁用判定表。与 TEST-VECTORS.md §4 同源。
+# 溯源:new-api controller/relay.go:319-349、setting/operation_setting/status_code_ranges.go
+
+meta:
+  default_retry_ranges: "100-199, 300-399, 401-407, 409-499, 500-503, 505-523, 525-599"
+  always_skip_retry_status: [504, 524]
+  default_disable_ranges: "401-401"
+
+# 判定短路顺序(顺序错了结果不同)
+decision_order:
+  1: "err == nil                 -> false"
+  2: "亲和性失败跳过重试          -> false"
+  3: "是渠道错误(channel:*)     -> true    # 优先于次数判定"
+  4: "skip_retry 标记            -> false"
+  5: "retry_times_left <= 0      -> false"
+  6: "指定了 specific_channel_id -> false"
+  7: "2xx                        -> false"
+  8: "status < 100 或 > 599      -> true"
+  9: "IsAlwaysSkipRetryCode      -> false"
+  10: "按可重试区间判定"
+
+# 前提:retry_times_left > 0、非渠道错误、无特殊标记
+should_retry_matrix:
+  - { status: 100, expect: true }
+  - { status: 200, expect: false, reason: "2xx 一律不重试" }
+  - { status: 201, expect: false }
+  - { status: 204, expect: false }
+  - { status: 301, expect: true }
+  - { status: 399, expect: true }
+  - { status: 400, expect: false, reason: "参数错误,换渠道无用" }
+  - { status: 401, expect: true,  reason: "可重试,但同时触发自动禁用" }
+  - { status: 407, expect: true }
+  - { status: 408, expect: false, reason: "请求超时,重试加剧拥塞" }
+  - { status: 409, expect: true }
+  - { status: 429, expect: true }
+  - { status: 499, expect: true }
+  - { status: 500, expect: true }
+  - { status: 503, expect: true }
+  - { status: 504, expect: false, reason: "网关超时,上游可能已在处理,重试会重复计费" }
+  - { status: 505, expect: true }
+  - { status: 523, expect: true }
+  - { status: 524, expect: false, reason: "同 504" }
+  - { status: 525, expect: true }
+  - { status: 599, expect: true }
+  - { status: 0,   expect: true,  reason: "超出 100..599,视为网络异常" }
+  - { status: 99,  expect: true }
+  - { status: 600, expect: true }
+
+should_disable_matrix:
+  - { status: 401, auto_ban: true,  expect: true }
+  - { status: 401, auto_ban: false, expect: false, reason: "渠道级开关关闭" }
+  - { status: 400, auto_ban: true,  expect: false }
+  - { status: 403, auto_ban: true,  expect: false }
+  - { status: 429, auto_ban: true,  expect: false }
+  - { status: 500, auto_ban: true,  expect: false }
+  - { local_error: true, status: 401, auto_ban: true, expect: false, reason: "我方解析错误,不能怪渠道" }
+
+disable_scope:
+  single_key: "整渠道 status = 3(自动禁用)并从索引摘除"
+  multi_key:  "仅禁用出错 key 的下标,其余 key 仍可选中"
+  recovery:   "自动禁用 + 测试通过 + 开启自动恢复 -> 重新启用;手动禁用(status=2)不自动恢复"

@@ -1,0 +1,32 @@
+{
+  "recorded_from": "new-api",
+  "recorded_at": "2026-09-11T01:36:03Z",
+  "newapi_version": "v0.0.0",
+  "endpoint": "GET /api/redemption/?p=1&page_size=10",
+  "request": {
+    "method": "GET",
+    "path": "/api/redemption/?p=1&page_size=10",
+    "header_names": [
+      "Authorization",
+      "Content-Type",
+      "New-Api-User"
+    ],
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "data": {
+        "page": 1,
+        "page_size": 10,
+        "total": 0,
+        "items": []
+      },
+      "message": "",
+      "success": true
+    }
+  }
+}

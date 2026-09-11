@@ -1,0 +1,36 @@
+{
+  "recorded_from": "new-api",
+  "recorded_at": "2026-09-11T01:36:03Z",
+  "newapi_version": "v0.0.0",
+  "endpoint": "POST /v1/messages",
+  "request": {
+    "method": "POST",
+    "path": "/v1/messages",
+    "header_names": [
+      "Content-Type"
+    ],
+    "body": {
+      "model": "claude-3-5-sonnet",
+      "max_tokens": 16,
+      "messages": [
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ]
+    }
+  },
+  "response": {
+    "status": 401,
+    "headers": {
+      "Content-Type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "error": {
+        "code": "",
+        "message": "Invalid token (request id: 202609110136055295205698268d9d6PA1nT4ja)",
+        "type": "new_api_error"
+      }
+    }
+  }
+}

@@ -1,0 +1,74 @@
+{
+  "recorded_from": "new-api",
+  "recorded_at": "2026-09-11T01:36:03Z",
+  "newapi_version": "v0.0.0",
+  "endpoint": "GET /api/channel/?p=1&page_size=10",
+  "request": {
+    "method": "GET",
+    "path": "/api/channel/?p=1&page_size=10",
+    "header_names": [
+      "Authorization",
+      "Content-Type",
+      "New-Api-User"
+    ],
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "data": {
+        "items": [
+          {
+            "id": 1,
+            "type": 1,
+            "key": "",
+            "openai_organization": null,
+            "test_model": null,
+            "status": 1,
+            "name": "mock-upstream",
+            "weight": 1,
+            "created_time": 1789090239,
+            "test_time": 0,
+            "response_time": 0,
+            "base_url": "http://127.0.0.1:3999",
+            "other": "",
+            "balance": 0,
+            "balance_updated_time": 0,
+            "models": "gpt-4",
+            "group": "default",
+            "used_quota": 3150,
+            "model_mapping": null,
+            "status_code_mapping": "",
+            "priority": 0,
+            "auto_ban": 0,
+            "other_info": "",
+            "tag": null,
+            "setting": null,
+            "param_override": null,
+            "header_override": null,
+            "remark": null,
+            "channel_info": {
+              "is_multi_key": false,
+              "multi_key_size": 0,
+              "multi_key_status_list": null,
+              "multi_key_polling_index": 0,
+              "multi_key_mode": ""
+            },
+            "settings": ""
+          }
+        ],
+        "page": 1,
+        "page_size": 10,
+        "total": 1,
+        "type_counts": {
+          "1": 1
+        }
+      },
+      "message": "",
+      "success": true
+    }
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "recorded_from": "new-api",
+  "recorded_at": "2026-09-11T01:36:03Z",
+  "newapi_version": "v0.0.0",
+  "endpoint": "GET /dashboard/billing/subscription",
+  "request": {
+    "method": "GET",
+    "path": "/dashboard/billing/subscription",
+    "header_names": [
+      "Authorization",
+      "Content-Type"
+    ],
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "object": "billing_subscription",
+      "has_payment_method": true,
+      "soft_limit_usd": 100000000,
+      "hard_limit_usd": 100000000,
+      "system_hard_limit_usd": 100000000,
+      "access_until": 0
+    }
+  }
+}

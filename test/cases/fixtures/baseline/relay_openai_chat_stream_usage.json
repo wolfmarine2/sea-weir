@@ -1,0 +1,43 @@
+{
+  "recorded_from": "new-api",
+  "recorded_at": "2026-09-11T01:36:03Z",
+  "newapi_version": "v0.0.0",
+  "endpoint": "POST /v1/chat/completions",
+  "request": {
+    "method": "POST",
+    "path": "/v1/chat/completions",
+    "header_names": [
+      "Authorization",
+      "Content-Type"
+    ],
+    "body": {
+      "model": "gpt-4",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ],
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      }
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Cache-Control": "no-cache",
+      "Content-Type": "text/event-stream"
+    },
+    "chunks": [
+      "data: {\"id\": \"chatcmpl-mock001\", \"object\": \"chat.completion.chunk\", \"created\": 1757000000, \"model\": \"gpt-4\", \"choices\": [{\"index\": 0, \"delta\": {\"role\": \"assistant\", \"content\": \"\"}, \"finish_reason\": null}]}",
+      "data: {\"id\": \"chatcmpl-mock001\", \"object\": \"chat.completion.chunk\", \"created\": 1757000000, \"model\": \"gpt-4\", \"choices\": [{\"index\": 0, \"delta\": {\"content\": \"Hel\"}, \"finish_reason\": null}]}",
+      "data: {\"id\": \"chatcmpl-mock001\", \"object\": \"chat.completion.chunk\", \"created\": 1757000000, \"model\": \"gpt-4\", \"choices\": [{\"index\": 0, \"delta\": {\"content\": \"lo!\"}, \"finish_reason\": null}]}",
+      "data: {\"id\": \"chatcmpl-mock001\", \"object\": \"chat.completion.chunk\", \"created\": 1757000000, \"model\": \"gpt-4\", \"choices\": [{\"index\": 0, \"delta\": {}, \"finish_reason\": \"stop\"}]}",
+      "data: {\"id\": \"chatcmpl-mock001\", \"object\": \"chat.completion.chunk\", \"created\": 1757000000, \"model\": \"gpt-4\", \"choices\": [], \"usage\": {\"prompt_tokens\": 9, \"completion_tokens\": 3, \"total_tokens\": 12}}",
+      "data: [DONE]"
+    ],
+    "body": null
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "recorded_from": "new-api",
+  "recorded_at": "2026-09-11T01:36:03Z",
+  "newapi_version": "v0.0.0",
+  "endpoint": "POST /v1/chat/completions",
+  "request": {
+    "method": "POST",
+    "path": "/v1/chat/completions",
+    "header_names": [
+      "Authorization",
+      "Content-Type"
+    ],
+    "body": {
+      "model": "definitely-nonexistent-model",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ]
+    }
+  },
+  "response": {
+    "status": 503,
+    "headers": {
+      "Content-Type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "error": {
+        "code": "model_not_found",
+        "message": "No available channel for model definitely-nonexistent-model under group default (distributor) (request id: 202609110136055353520338268d9d6R67qAgKZ)",
+        "type": "new_api_error"
+      }
+    }
+  }
+}

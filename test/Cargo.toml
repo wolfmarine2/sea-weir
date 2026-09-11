@@ -1,0 +1,55 @@
+[package]
+name = "sea-weir-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# 独立 workspace:测试 crate 不进 code/backend 的 workspace,
+# 避免测试依赖(testcontainers/wiremock)污染生产构建的依赖树。
+[workspace]
+
+[dependencies]
+sea-weir-types = { path = "../code/backend/crates/sea-weir-types" }
+sea-weir-repository = { path = "../code/backend/crates/sea-weir-repository", features = ["mock"] }
+sea-weir-adaptors = { path = "../code/backend/crates/sea-weir-adaptors" }
+sea-weir-core = { path = "../code/backend/crates/sea-weir-core" }
+# 可选:sea-weir-server 经 webauthn-rs 硬依赖 openssl。
+# 无 libssl-dev 的环境不启用该 feature,其余 L1 用例照常运行。
+sea-weir-server = { path = "../code/backend/crates/sea-weir-server", optional = true }
+
+tokio = { version = "1", features = ["full", "test-util"] }
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+rust_decimal = { version = "1", features = ["serde-with-float"] }
+rust_decimal_macros = "1"
+chrono = { version = "0.4", features = ["serde"] }
+http = "1"
+bytes = "1"
+
+# L2 集成层:真实 openGauss / Valkey
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "chrono", "json"] }
+fred = "10"
+testcontainers = "0.23"
+testcontainers-modules = { version = "0.11", features = ["postgres", "redis"] }
+
+# L3/L4:HTTP 黑盒与上游打桩
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+wiremock = "0.6"
+
+# 断言与用例组织
+rstest = "0.24"
+pretty_assertions = "1"
+mockall = "0.13"
+futures = "0.3"
+rand = "0.8"
+
+[features]
+# 默认不启用 —— 需要 libssl-dev。CI 的 test 环境应显式开启:
+#   cargo test --features server-tests
+default = []
+server-tests = ["dep:sea-weir-server"]
+
+[lib]
+path = "src/lib.rs"

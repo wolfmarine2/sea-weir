@@ -1,0 +1,97 @@
+{
+  "recorded_from": "new-api",
+  "recorded_at": "2026-09-11T01:36:03Z",
+  "newapi_version": "v0.0.0",
+  "endpoint": "GET /api/user/?p=1&page_size=10",
+  "request": {
+    "method": "GET",
+    "path": "/api/user/?p=1&page_size=10",
+    "header_names": [
+      "Authorization",
+      "Content-Type",
+      "New-Api-User"
+    ],
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "data": {
+        "page": 1,
+        "page_size": 10,
+        "total": 2,
+        "items": [
+          {
+            "id": 2,
+            "username": "lowpriv",
+            "password": "",
+            "original_password": "",
+            "display_name": "Low",
+            "role": 1,
+            "status": 1,
+            "email": "",
+            "github_id": "",
+            "discord_id": "",
+            "oidc_id": "",
+            "wechat_id": "",
+            "telegram_id": "",
+            "verification_code": "",
+            "access_token": "<redacted>",
+            "quota": 0,
+            "used_quota": 0,
+            "request_count": 0,
+            "group": "default",
+            "aff_code": "P7m6",
+            "aff_count": 0,
+            "aff_quota": 0,
+            "aff_history_quota": 0,
+            "inviter_id": 0,
+            "DeletedAt": null,
+            "linux_do_id": "",
+            "setting": "{\"gotify_priority\":0,\"sidebar_modules\":\"{\\\"chat\\\":{\\\"chat\\\":true,\\\"enabled\\\":true,\\\"playground\\\":true},\\\"console\\\":{\\\"detail\\\":true,\\\"enabled\\\":true,\\\"log\\\":true,\\\"midjourney\\\":true,\\\"task\\\":true,\\\"token\\\":true},\\\"personal\\\":{\\\"enabled\\\":true,\\\"personal\\\":true,\\\"topup\\\":true}}\"}",
+            "stripe_customer": "",
+            "created_at": 1789090495,
+            "last_login_at": 1789090495
+          },
+          {
+            "id": 1,
+            "username": "root",
+            "password": "",
+            "original_password": "",
+            "display_name": "Root User",
+            "role": 100,
+            "status": 1,
+            "email": "",
+            "github_id": "",
+            "discord_id": "",
+            "oidc_id": "",
+            "wechat_id": "",
+            "telegram_id": "",
+            "verification_code": "",
+            "access_token": "<redacted>",
+            "quota": 99996850,
+            "used_quota": 3150,
+            "request_count": 14,
+            "group": "default",
+            "aff_code": "",
+            "aff_count": 0,
+            "aff_quota": 0,
+            "aff_history_quota": 0,
+            "inviter_id": 0,
+            "DeletedAt": null,
+            "linux_do_id": "",
+            "setting": "",
+            "stripe_customer": "",
+            "created_at": 1789090015,
+            "last_login_at": 1789090023
+          }
+        ]
+      },
+      "message": "",
+      "success": true
+    }
+  }
+}

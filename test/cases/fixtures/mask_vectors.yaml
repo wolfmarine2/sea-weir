@@ -1,0 +1,25 @@
+# 令牌脱敏向量。溯源:new-api model/token.go MaskTokenKey
+#
+# 规则:
+#   len <= 4 -> 全掩码(长度等于原长)
+#   len <= 8 -> 前2 + "****" + 后2
+#   len >  8 -> 前4 + "**********" + 后4
+
+vectors:
+  - { input: "",          expected: "" }
+  - { input: "a",         expected: "*" }
+  - { input: "ab",        expected: "**" }
+  - { input: "abc",       expected: "***" }
+  - { input: "abcd",      expected: "****" }
+  - { input: "abcde",     expected: "ab****de" }
+  - { input: "abcdefg",   expected: "ab****fg" }
+  - { input: "abcdefgh",  expected: "ab****gh" }
+  - { input: "abcdefghi", expected: "abcd**********fghi" }
+  - { input: "PREFIX_SECRET_MIDDLE_PART_SUFFIX", expected_contains_none: ["SECRET", "MIDDLE"] }
+
+real_length:
+  desc: "48 位真实令牌"
+  input_pattern: "44 个 a + 'wxyz'"
+  expected_length: 18
+  expected_prefix: "aaaa"
+  expected_suffix: "wxyz"

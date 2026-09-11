@@ -1,0 +1,56 @@
+{
+  "recorded_from": "new-api",
+  "recorded_at": "2026-09-11T01:36:03Z",
+  "newapi_version": "v0.0.0",
+  "endpoint": "GET /api/user/self",
+  "request": {
+    "method": "GET",
+    "path": "/api/user/self",
+    "header_names": [
+      "Authorization",
+      "Content-Type",
+      "New-Api-User"
+    ],
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "data": {
+        "aff_code": "",
+        "aff_count": 0,
+        "aff_history_quota": 0,
+        "aff_quota": 0,
+        "discord_id": "",
+        "display_name": "Root User",
+        "email": "",
+        "github_id": "",
+        "group": "default",
+        "id": 1,
+        "inviter_id": 0,
+        "linux_do_id": "",
+        "oidc_id": "",
+        "permissions": {
+          "sidebar_modules": {},
+          "sidebar_settings": false
+        },
+        "quota": 99996850,
+        "request_count": 14,
+        "role": 100,
+        "setting": "",
+        "sidebar_modules": "",
+        "status": 1,
+        "stripe_customer": "",
+        "telegram_id": "",
+        "used_quota": 3150,
+        "username": "root",
+        "wechat_id": ""
+      },
+      "message": "",
+      "success": true
+    }
+  }
+}

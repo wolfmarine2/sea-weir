@@ -1,0 +1,31 @@
+{
+  "recorded_from": "new-api",
+  "recorded_at": "2026-09-11T01:36:03Z",
+  "newapi_version": "v0.0.0",
+  "endpoint": "POST /v1/fine-tunes",
+  "request": {
+    "method": "POST",
+    "path": "/v1/fine-tunes",
+    "header_names": [
+      "Authorization",
+      "Content-Type"
+    ],
+    "body": {
+      "model": "gpt-4"
+    }
+  },
+  "response": {
+    "status": 501,
+    "headers": {
+      "Content-Type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "error": {
+        "message": "API not implemented",
+        "type": "new_api_error",
+        "param": "",
+        "code": "api_not_implemented"
+      }
+    }
+  }
+}
