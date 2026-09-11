@@ -1,0 +1,71 @@
+# =============================================================================
+# sea-weir 仓库级忽略规则(兜底)
+#
+# 各子项目另有自己的 .gitignore(code/backend、code/frontend、test、data),
+# 这里只放跨目录通用的规则:
+#   - 操作系统 / 编辑器产生的文件
+#   - 密钥、本地配置与本地覆盖(绝不入库)
+#   - 构建产物与覆盖率(兜底,防止新目录漏配)
+#
+# 必须入库、不要在此忽略的东西:
+#   code/backend/Cargo.lock        应用锁文件,保证可复现构建
+#   code/frontend/package-lock.json npm 锁文件
+#   code/backend/config/config.example.yaml   配置模板(无密钥)
+#   test/cases/fixtures/baseline/*.json       契约基线(真实录制,契约测试依据)
+#   data/**                         DDL / 初始化 / 种子脚本
+# =============================================================================
+
+# ── 操作系统 ──
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+Desktop.ini
+
+# ── 编辑器 / IDE ──
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.code-workspace
+
+# ── 密钥与本地配置(仓库内不存任何口令) ──
+.env
+.env.*
+!.env.example
+*.local
+*.local.*
+!*.local.example
+config/config.yaml
+
+# ── 构建产物兜底(子项目 .gitignore 已有更细规则) ──
+target/
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+.vite/
+
+# ── 日志与临时文件 ──
+*.log
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.pid
+*.tmp
+
+# ── Python 缓存(data/、test/env 内有脚本) ──
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── 覆盖率(Rust) ──
+*.profraw
+*.profdata
+lcov.info

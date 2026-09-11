@@ -1,0 +1,12 @@
+# 数据目录:脚本与 DDL 入库;本地覆盖与临时导出不入库。
+# 连接参数唯一来源是 Nacos 的 database.dsn(见 README),这里只兜底本地调试文件。
+
+*.local.env
+*.local.sql
+*.local.sh
+.env
+.env.*
+
+# 迁移/对账时的临时导出
+*.dump
+*.csv
