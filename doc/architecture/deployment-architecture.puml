@@ -1,0 +1,101 @@
+@startuml
+
+!include <C4/C4_Deployment>
+
+title 部署架构 - sea-weir(React SPA + Rust)/ LOONG-Cloud K8s
+
+' ============================================================
+' 部署拓扑:与 system-design.md §9 保持一致。
+' 本图为设计目标形态;实际部署清单(kustomize + deploy.sh)将在
+' 实施阶段落到仓库根的 cicd/ 目录,届时以清单为准回写本图。
+' 注意:本文件是 PlantUML(C4-PlantUML stdlib),不是 Structurizr DSL。
+' ============================================================
+
+AddContainerTag(rust,   $bgColor="#B7410E", $fontColor="#FFFFFF")
+AddContainerTag(web,    $bgColor="#4472C4", $fontColor="#FFFFFF")
+AddContainerTag(store,  $bgColor="#548235", $fontColor="#FFFFFF")
+AddContainerTag(infra,  $bgColor="#7F6000", $fontColor="#FFFFFF")
+
+Person(end_user, "终端用户 / 运营管理员", "浏览器")
+Person(ai_client, "AI 客户端", "sk-token 调用方")
+
+System_Ext(upstream_llm, "上游模型提供方", "35 个同步渠道适配器 + 10 家任务平台")
+System_Ext(oauth_providers, "OAuth 提供方", "GitHub / Discord / LinuxDO / OIDC / 微信 / Telegram")
+System_Ext(payment_gw, "支付渠道", "易支付 / Stripe / Creem / Waffo(回调)")
+
+Deployment_Node(cicd, "CI/CD", "Forgejo + kaniko + ArgoCD") {
+  Container(forgejo, "Forgejo", "Git", "源码仓库", $tags="infra")
+  Container(harbor, "Harbor", "镜像仓库", "harbor.prod.dhzq.cn", $tags="infra")
+  Container(pipeline, "Pipeline", "kaniko 构建 + ArgoCD 同步", "多阶段构建前后端镜像", $tags="infra")
+}
+
+Deployment_Node(k8s, "Kubernetes Cluster", "LOONG-Cloud") {
+
+  Deployment_Node(ns_infra, "平台基础设施", "namespace: infra") {
+    Container(ingress, "nginx-ingress", "LoadBalancer", "TLS 终结、按 Host 路由", $tags="infra")
+    Container(nacos, "Nacos", "配置中心", "nacos-svc.nacos:8848", $tags="infra")
+  }
+
+  Deployment_Node(ns_app, "loong-service-sea-weir", "namespace") {
+
+    Deployment_Node(fe_deploy, "Deployment: sea-weir-frontend", "nginx:alpine, 2 replicas") {
+      Container(frontend, "web_frontend", "nginx :80 + React dist", "静态资源托管;反代 /api、/v1、/v1beta、/mj、/suno、/kling、/jimeng、/pg、/dashboard 到后端。SSE 路径关闭 proxy_buffering、超时放宽至 600s", $tags="web")
+    }
+
+    Container(svc, "Service: sea-weir-svc", "ClusterIP :8080", "单协议单端口(HTTP)", $tags="infra")
+
+    Deployment_Node(be_deploy, "Deployment: sea-weir-server", "Rust 静态二进制, ≥2 replicas, 无状态") {
+      Container(http_server, "HTTP_Server", "axum :8080", "管理面 /api + 中继面 /v1 等 + 兼容面 /dashboard", $tags="rust")
+      Container(app_state, "AppState", "Arc<AppState>", "线程安全共享状态", $tags="rust")
+      Container(sqlx_pool, "sqlx_Pool", "PgPool ×2", "主库池(max 100)/ 日志库池", $tags="rust")
+      Container(valkey_client, "Valkey_Client", "fred", "缓存 / 限流 / 会话吊销 / pub-sub 失效广播", $tags="rust")
+      Container(bg_tasks, "Background_Tasks", "tokio tasks", "渠道缓存同步 60s、Option 同步 60s、任务轮询 15s、渠道定时测试、订阅周期重置、崩溃预扣对账", $tags="rust")
+      Container(tracing, "tracing", "tracing-subscriber", "结构化日志,request-id 贯穿;RUST_LOG 控制级别", $tags="rust")
+    }
+
+    Deployment_Node(db_sts, "StatefulSet: opengauss", "PVC ceph-block 50Gi") {
+      ContainerDb(opengauss, "opengauss_db", "openGauss :5432", "主库(26 张表)+ 日志库(可独立实例)", $tags="store")
+    }
+
+    Deployment_Node(cache_sts, "StatefulSet: valkey", "PVC ceph-block 10Gi") {
+      ContainerDb(valkey, "redis_cache", "Valkey :6379", "用户/令牌/亲和性缓存、限流窗口、会话吊销、幂等键", $tags="store")
+    }
+
+    Deployment_Node(cfg, "Configuration", "ConfigMap / Secret") {
+      Container(cm, "sea-weir-app-config", "ConfigMap", "nacos_addr / namespace / data_id / group", $tags="infra")
+      Container(sec_nacos, "sea-weir-nacos-creds", "Secret", "NACOS_USERNAME / NACOS_PASSWORD", $tags="infra")
+      Container(sec_app, "sea-weir-secrets", "Secret", "SESSION_SECRET / CRYPTO_SECRET / DB 口令", $tags="infra")
+    }
+  }
+}
+
+Rel(end_user, ingress, "HTTPS")
+Rel(ai_client, ingress, "HTTPS(API 直连)")
+Rel(oauth_providers, ingress, "OAuth 回调 /api/oauth/*", "HTTPS")
+Rel(payment_gw, ingress, "支付回调 /api/*/webhook、/api/user/epay/notify", "HTTPS")
+
+Rel(ingress, frontend, "HTTP :80")
+Rel(frontend, svc, "反代 /api、/v1 等", "HTTP :8080")
+Rel(svc, http_server, "转发", "HTTP :8080")
+
+Rel(http_server, app_state, "共享状态")
+Rel(app_state, sqlx_pool, "持有")
+Rel(app_state, valkey_client, "持有")
+Rel(sqlx_pool, opengauss, "SQL", "TCP :5432")
+Rel(valkey_client, valkey, "RESP", "TCP :6379")
+Rel(bg_tasks, opengauss, "对账 / 轮询 / 重置")
+Rel(bg_tasks, valkey, "缓存失效广播 pub/sub")
+Rel(http_server, upstream_llm, "中继转发(出网,SSRF 防护)", "HTTPS / WSS")
+
+Rel(http_server, nacos, "拉取 sea-weir.yaml + 监听变更", "HTTP :8848")
+Rel(cm, http_server, "环境变量注入")
+Rel(sec_nacos, http_server, "环境变量注入")
+Rel(sec_app, http_server, "环境变量注入")
+
+Rel(forgejo, pipeline, "push 触发")
+Rel(pipeline, harbor, "push image")
+Rel(pipeline, ns_app, "kustomize apply")
+
+SHOW_LEGEND()
+
+@enduml

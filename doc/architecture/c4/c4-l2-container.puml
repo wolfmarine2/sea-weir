@@ -1,0 +1,47 @@
+@startuml
+
+!include <C4/C4_Container>
+
+title C4 L2 Container - sea-weir
+
+' ============================================================
+' L2 容器图定义 sea-weir 内部的运行单元与边界。
+' 注意:此处定义的容器名称是所有时序图(SEQ-*.puml)参与者的
+' 唯一合法来源,命名保持 snake_case。
+' ============================================================
+
+Person(end_user, "终端用户", "浏览器")
+Person(admin, "运营管理员", "浏览器")
+Person(ai_client, "AI 客户端", "sk-token 调用方")
+
+System_Boundary(seaweir, "sea-weir") {
+  Container(web_frontend, "web_frontend", "React 18 + TS / nginx :80", "控制台与管理端 SPA;静态托管 + /api、/v1 等反向代理")
+  Container(api_server, "api_server", "Rust / axum :8080", "统一 HTTP 入口:路由(管理面/中继面/兼容面)、中间件链(认证/限流/分发)、handlers、统一响应出口")
+  Container(admin_engine, "admin_engine", "Rust / sea-weir-core", "管理面业务编排:用户/渠道/令牌/订单/订阅/设置/看板")
+  Container(relay_engine, "relay_engine", "Rust / sea-weir-core + sea-weir-adaptors", "中继管线:渠道选择、适配器调用、计费状态机、流式转发、任务轮询、自动禁用")
+  Container(repository_layer, "repository_layer", "Rust / sqlx", "数据访问层:Repository Trait 实现、主库/日志库双连接池、缓存读穿与失效广播")
+}
+
+ContainerDb(opengauss_db, "opengauss_db", "openGauss :5432", "主数据存储 + 日志库")
+ContainerDb(redis_cache, "redis_cache", "Valkey :6379", "用户/令牌/亲和性缓存、限流、会话吊销、失效广播")
+System_Ext(upstream_llm, "upstream_llm", "上游模型提供方(OpenAI 等)")
+System_Ext(nacos, "nacos", "Nacos 配置中心")
+
+Rel(end_user, web_frontend, "HTTPS")
+Rel(admin, web_frontend, "HTTPS")
+Rel(web_frontend, api_server, "REST /api/*(会话 Cookie + New-Api-User)", "JSON")
+Rel(ai_client, api_server, "OpenAI/Claude/Gemini 兼容 API(/v1 等,sk-token)", "JSON/SSE/WS")
+
+Rel(api_server, admin_engine, "管理面编排调用")
+Rel(api_server, relay_engine, "中继面入口调用")
+Rel(admin_engine, repository_layer, "数据操作")
+Rel(relay_engine, repository_layer, "数据操作")
+Rel(relay_engine, upstream_llm, "中继转发", "HTTPS/WS")
+Rel(relay_engine, redis_cache, "令牌缓存/限流/亲和性")
+Rel(repository_layer, opengauss_db, "SQL", "sqlx")
+Rel(repository_layer, redis_cache, "读穿/失效广播")
+Rel(api_server, nacos, "启动拉取配置")
+
+SHOW_LEGEND()
+
+@enduml

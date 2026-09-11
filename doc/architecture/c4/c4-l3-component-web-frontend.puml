@@ -1,0 +1,40 @@
+@startuml
+
+!include <C4/C4_Component>
+
+title C4 L3 Component - web_frontend(sea-weir)
+
+' ============================================================
+' web_frontend 组件图:React SPA。
+' 组件对应 code/frontend/src 的模块。
+' ============================================================
+
+Container_Boundary(web_frontend, "web_frontend (React 18 + TS + antd 5)") {
+  Component(app_shell, "app_shell", "App.tsx / layouts", "主题(亮/暗)、路由注册、守卫(体验层)、布局(顶栏+侧边导航)")
+  Component(api_layer, "api_layer", "api/client.ts + modules/", "axios 封装:New-Api-User 头、success=false 统一报错、GET 去重、401 清态跳登录;按域 API 函数")
+  Component(stores, "stores", "zustand ×3", "user(登录态,persist)/ status(全站配置,不持久化)/ theme(persist)")
+  Component(table_kit, "table_kit", "components/table/", "表格五件套:DataTable/ColumnDefs/Filters/Actions + useXxxData hooks(11 域复用)")
+  Component(console_pages, "console_pages", "pages/console/", "用户端 8 页:看板/令牌/日志/绘图/任务/钱包/个人/操练场")
+  Component(admin_pages, "admin_pages", "pages/admin/", "管理端 7 页:渠道/模型/订阅/兑换码/用户/设置(12 组)/部署")
+  Component(playground, "playground", "pages/playground/", "聊天调试台:SSE 直连 /pg/chat/completions、参数面板、自定义请求、Debug 视图")
+  Component(pricing_pages, "pricing_pages", "pages/pricing/", "模型广场:定价/倍率展示,可按配置要求登录")
+  Component(i18n, "i18n", "i18n/", "i18next 资源(zh-CN/zh-TW/en/ja/fr);antd ConfigProvider 同步 locale")
+}
+
+Container_Ext(api_server, "api_server", "来自 L2", "REST /api/* + /pg")
+
+Rel(app_shell, stores, "读写状态")
+Rel(app_shell, console_pages, "路由")
+Rel(app_shell, admin_pages, "路由(Admin/Root 守卫)")
+Rel(console_pages, table_kit, "编排")
+Rel(admin_pages, table_kit, "编排")
+Rel(console_pages, api_layer, "数据获取")
+Rel(admin_pages, api_layer, "数据获取")
+Rel(playground, api_layer, "会话态调试(SSE)")
+Rel(pricing_pages, api_layer, "GET /api/pricing")
+Rel(api_layer, api_server, "HTTP/JSON", "axios")
+Rel(stores, api_layer, "登录后重建 header")
+
+SHOW_LEGEND()
+
+@enduml

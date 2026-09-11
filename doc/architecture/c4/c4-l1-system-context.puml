@@ -1,0 +1,44 @@
+@startuml
+
+!include <C4/C4_Context>
+
+title C4 L1 System Context - sea-weir(AI 网关与大模型 API 管理中台)
+
+' ============================================================
+' sea-weir — System Context Diagram
+' new-api 的 React + Rust 重构:管理面 16 域 + 中继面 OpenAI/Claude/Gemini 兼容转发
+' ============================================================
+
+' ---------- People (用户角色) ----------
+Person(end_user, "终端用户", "浏览器使用控制台:令牌、钱包、日志、操练场、订阅。")
+Person(admin, "运营管理员", "管理渠道/定价/用户/设置;admin 与 root 两级。")
+Person(ai_client, "AI 客户端", "以 sk-token 调用 OpenAI/Claude/Gemini 兼容 API 的机器调用方。")
+
+' ---------- Core System (核心系统) ----------
+System(seaweir, "sea-weir", "AI 网关与中台:中继转发(35 个渠道适配器 + 智能路由 + 计费),管理面 16 个功能域,305 条路由(管理面 236)。")
+
+' ---------- External Systems (外部系统) ----------
+System_Ext(upstream_llm, "上游模型提供方", "OpenAI / Claude / Gemini / 火山 / 阿里 等 35 个同步渠道适配器 + 10 家异步任务平台。")
+System_Ext(opengauss_db, "openGauss 数据库", "主数据存储 + 日志库(独立连接池)。")
+System_Ext(redis_cache, "Valkey 缓存", "用户/令牌/亲和性缓存、限流窗口、会话吊销、失效广播。")
+System_Ext(nacos, "Nacos 配置中心", "生产配置下发(sea-weir.yaml)。")
+System_Ext(oauth_provider, "OAuth 提供方", "GitHub / Discord / LinuxDO / OIDC / 微信 / Telegram / 自定义。")
+System_Ext(payment_gateway, "支付渠道", "易支付 / Stripe / Creem / Waffo(下单与异步回调)。")
+System_Ext(smtp, "SMTP 邮件服务", "验证码与通知邮件。")
+
+' ---------- Relationships (关系) ----------
+Rel(end_user, seaweir, "HTTPS(浏览器,管理面 /api/*)")
+Rel(admin, seaweir, "HTTPS(浏览器,管理面 /api/*)")
+Rel(ai_client, seaweir, "OpenAI/Claude/Gemini 兼容 API(中继面 /v1 等)")
+Rel(seaweir, upstream_llm, "中继转发(HTTPS/WebSocket)")
+Rel(seaweir, opengauss_db, "数据读写(SQL)")
+Rel(seaweir, redis_cache, "缓存读写 / 限流 / 吊销 / pub-sub")
+Rel(seaweir, nacos, "拉取配置")
+Rel(seaweir, oauth_provider, "OAuth 授权码流程")
+Rel(seaweir, payment_gateway, "下单 / 回调验签")
+Rel(seaweir, smtp, "发送邮件(SMTP)")
+
+' ---------- Legend ----------
+SHOW_LEGEND()
+
+@enduml

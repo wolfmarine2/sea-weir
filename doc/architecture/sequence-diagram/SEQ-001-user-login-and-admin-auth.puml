@@ -1,0 +1,67 @@
+@startuml SEQ-001-user-login-and-admin-auth
+!pragma teoz true
+title SEQ-001: 用户登录与管理面请求认证时序图 (User Login & Admin Auth Sequence)
+skinparam backgroundColor #FFFFFF
+skinparam sequenceMessageAlign center
+
+' 参与者定义 - 使用容器名称(来自 C4 L2 设计)
+actor "终端用户/运营管理员" as user
+participant "web_frontend\n(React SPA)" as web_frontend
+participant "api_server\n(axum :8080)" as api_server
+participant "admin_engine\n(管理业务)" as admin_engine
+participant "repository_layer\n(数据访问层)" as repository
+database "opengauss_db\n(数据库)" as opengauss
+participant "redis_cache\n(Valkey)" as redis_cache
+
+== 登录(账密 + 可选 2FA) ==
+
+user -> web_frontend : 提交用户名/密码(/api/user/login)
+web_frontend -> api_server : POST /api/user/login [同步]
+activate api_server
+api_server -> admin_engine : login(username, password) [同步]
+activate admin_engine
+admin_engine -> repository : find_by_username(username) [同步]
+repository -> opengauss : SELECT users ... [同步]
+opengauss --> repository : row
+repository --> admin_engine : User
+admin_engine -> admin_engine : bcrypt 校验密码
+alt 密码正确且未开启 2FA
+  admin_engine --> api_server : Ok(user, session jti)
+else 开启 2FA
+  admin_engine --> api_server : 待二次验证标记
+  note right of admin_engine : 前端走 /api/user/login/2fa\nTOTP/备用码校验后建立会话
+else 密码错误/用户禁用
+  admin_engine --> api_server : Err(AppError::Biz/Unauthorized)
+end
+deactivate admin_engine
+api_server --> web_frontend : Set-Cookie(签名会话,HttpOnly,SameSite=Strict,30天)\n{success:true,data:user}
+deactivate api_server
+
+== 管理面受保护请求 ==
+
+user -> web_frontend : 操作(如查看令牌列表)
+web_frontend -> api_server : GET /api/token/\nCookie + New-Api-User: <uid> [同步]
+activate api_server
+api_server -> api_server : auth_middleware:验签/过期
+api_server -> redis_cache : EXISTS sess:revoke:{jti} [同步]
+redis_cache --> api_server : 0(未吊销)
+api_server -> repository : find_by_id(uid) [同步](缓存读穿)
+repository -> redis_cache : GET user:{uid} [同步]
+alt 缓存命中
+  redis_cache --> repository : UserBase
+else 缓存未命中
+  repository -> opengauss : SELECT users ... [同步]
+  repository -> redis_cache : HSET user:{uid} TTL=60s [异步回填]
+end
+api_server -> api_server : 校验 New-Api-User == uid、status、角色闸门
+alt 校验通过
+  api_server -> admin_engine : 业务调用 [同步]
+  admin_engine --> api_server : Ok(data)
+  api_server --> web_frontend : {success:true,data}
+else 会话吊销/角色不足
+  api_server --> web_frontend : 401/403 {success:false,message}
+  note right of api_server : 登出/改密/禁用时\njti 写入吊销列表(TTL=剩余有效期)
+end
+deactivate api_server
+
+@enduml

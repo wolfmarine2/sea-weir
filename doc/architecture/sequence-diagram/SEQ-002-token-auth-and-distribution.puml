@@ -1,0 +1,54 @@
+@startuml SEQ-002-token-auth-and-distribution
+!pragma teoz true
+title SEQ-002: 中继面令牌认证与渠道分发时序图 (Token Auth & Distribution Sequence)
+skinparam backgroundColor #FFFFFF
+skinparam sequenceMessageAlign center
+
+' 参与者定义 - 使用容器名称(来自 C4 L2 设计)
+actor "AI 客户端" as ai_client
+participant "api_server\n(axum :8080)" as api_server
+participant "relay_engine\n(中继管线)" as relay_engine
+participant "repository_layer\n(数据访问层)" as repository
+participant "redis_cache\n(Valkey)" as redis_cache
+database "opengauss_db\n(数据库)" as opengauss
+
+ai_client -> api_server : POST /v1/chat/completions\nAuthorization: Bearer sk-xxx [同步]
+activate api_server
+
+== TokenAuth(令牌认证) ==
+api_server -> api_server : 提取 key(Bearer/x-api-key/?key=/WS子协议)\n剥离 sk- 前缀与 -{channelId} 后缀
+api_server -> repository : find_by_key(HMAC(key)) [同步]
+repository -> redis_cache : HGETALL token:{hmac} [同步]
+alt 缓存命中
+  redis_cache --> repository : Token
+else 未命中
+  repository -> opengauss : SELECT tokens WHERE key=... [同步]
+  repository -> redis_cache : HSET 回填(TTL=60s) [异步]
+end
+api_server -> api_server : 校验 status/过期/remain_quota\nIP 白名单(CIDR)/用户未禁用/分组可用
+note right of api_server : 失败 → OpenAI 格式 401/403\n(insufficient_quota / permission_error)
+
+== ModelRequestRateLimit ==
+api_server -> redis_cache : 滑动窗口计数 MRRL:{user_id} [同步]
+redis_cache --> api_server : allowed
+note right of api_server : 超限 → 429 rate_limit_exceeded\n分组可覆盖配置
+
+== Distribute(渠道分发) ==
+api_server -> api_server : 解析目标模型与 relay 模式\n校验令牌模型限制(归一化匹配)
+api_server -> relay_engine : select_channel(group, model, retry=0) [同步]
+activate relay_engine
+relay_engine -> redis_cache : 亲和性查询 affinity:{规则指纹} [同步]
+alt 亲和性命中且渠道可用
+  redis_cache --> relay_engine : channel_id
+  note right of relay_engine : MarkChannelAffinityUsed
+else 未命中
+  relay_engine -> relay_engine : channel_cache 查索引\n(group,model)→优先级档→加权随机(weight+10)
+  note right of relay_engine : auto 分组:分组列表×优先级二维降级
+end
+relay_engine --> api_server : Channel + 选中 key(multi-key random/polling)
+deactivate relay_engine
+api_server -> api_server : 注入渠道上下文:\nbase_url/key/model_mapping/param_override/header_override...
+api_server --> ai_client : 进入 relay_entry(见 SEQ-003)
+deactivate api_server
+
+@enduml

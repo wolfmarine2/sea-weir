@@ -1,0 +1,45 @@
+@startuml
+
+!include <C4/C4_Component>
+
+title C4 L3 Component - relay_engine(sea-weir)
+
+' ============================================================
+' relay_engine 组件图:中继管线(本系统最复杂容器)。
+' 组件对应 sea-weir-core/relay 与 sea-weir-adaptors 的模块。
+' ============================================================
+
+Container_Boundary(relay_engine, "relay_engine (Rust / sea-weir-core + sea-weir-adaptors)") {
+  Component(channel_selector, "channel_selector", "Rust module", "选路:(group,model)→第 retry 高优先级档→档内加权随机(weight+10);auto 分组二维降级;亲和性优先")
+  Component(channel_cache, "channel_cache", "Rust module(moka)", "进程内渠道索引 group→model→[channel];60s 全量同步兜底 + pub/sub 即时失效")
+  Component(adaptor_registry, "adaptor_registry", "Rust registry", "Adaptor/TaskAdaptor trait 注册表(ApiType 35 + 任务平台 10)")
+  Component(format_convert, "format_convert", "Rust module", "OpenAI⇄Claude⇄Gemini 请求/响应/流式改写;RequestConversionChain 记录")
+  Component(billing, "billing", "Rust module", "计费状态机:预估(tiktoken)→ 预扣(信任旁路)→ 结算(差额补退)→ 退款(异步幂等)")
+  Component(stream_pipe, "stream_pipe", "Rust module", "SSE 行扫描/延迟一拍转发/usage 注入/ping 保活/空闲超时;WSS 双向 pipe 与增量扣费")
+  Component(task_polling, "task_polling", "Rust module", "异步任务 15s 轮询、超时清扫、CAS 终态、补差/退款")
+  Component(autoban, "autoban", "Rust module", "渠道错误判定(状态码+关键词 AC)→ 单 key/多 key 粒度禁用 → 通知;测试恢复")
+}
+
+Container_Ext(api_server, "api_server", "来自 L2", "中继面入口与分发")
+Container_Ext(repository_layer, "repository_layer", "来自 L2", "渠道/令牌/额度/日志/任务数据")
+Container_Ext(upstream_llm, "upstream_llm", "来自 L2", "上游模型提供方")
+Container_Ext(redis_cache, "redis_cache", "来自 L2", "亲和性缓存/失效广播")
+
+Rel(api_server, channel_selector, "Distribute 调用")
+Rel(channel_selector, channel_cache, "查索引")
+Rel(channel_selector, redis_cache, "亲和性查询/回写")
+Rel(api_server, adaptor_registry, "按 ApiType 取适配器")
+Rel(adaptor_registry, format_convert, "协议转换")
+Rel(adaptor_registry, upstream_llm, "DoRequest/DoResponse", "HTTPS/WS")
+Rel(api_server, billing, "预扣/结算/退款")
+Rel(billing, repository_layer, "原子扣减/幂等记录/消费日志")
+Rel(adaptor_registry, stream_pipe, "流式驱动")
+Rel(task_polling, repository_layer, "任务状态 CAS")
+Rel(task_polling, upstream_llm, "FetchTask 回源")
+Rel(autoban, repository_layer, "状态更新")
+Rel(autoban, channel_cache, "即时摘除")
+Rel(channel_cache, repository_layer, "全量重建")
+
+SHOW_LEGEND()
+
+@enduml

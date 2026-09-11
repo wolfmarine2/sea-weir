@@ -1,0 +1,327 @@
+@startuml
+!pragma teoz true
+
+title sea-weir - ER 图(openGauss)
+
+' ============================================================
+' 实体与字段与 code/backend/migrations 保持一致
+' 与 system-design.md §数据库设计 章节保持同步
+' 说明:字段为核心字段(非穷尽);所有额度为 BIGINT;业务表时间戳为 BIGINT unix 秒
+' ============================================================
+
+skinparam backgroundColor #FEFEFE
+
+entity "users" as users {
+  * id : BIGSERIAL <<PK>>
+  --
+  * username : VARCHAR(64) <<uk, 部分索引>>
+  * password : VARCHAR(255) (bcrypt)
+  display_name : VARCHAR(64)
+  * role : INT (0/1/10/100)
+  * status : INT (1启用/2禁用)
+  email / github_id / discord_id / oidc_id / wechat_id / telegram_id / linux_do_id : VARCHAR
+  access_token : CHAR(32) <<uk>>
+  * quota : BIGINT (钱包剩余额度)
+  * used_quota : BIGINT
+  * request_count : BIGINT
+  * group : VARCHAR(64) (计费分组)
+  aff_code : VARCHAR(32) <<uk>>; aff_quota / aff_history_quota : BIGINT
+  inviter_id : BIGINT
+  setting : JSONB (语言/通知/计费偏好)
+  stripe_customer : VARCHAR(64)
+  created_at / last_login_at : BIGINT
+  deleted_at : TIMESTAMPTZ
+}
+
+entity "tokens" as tokens {
+  * id : BIGSERIAL <<PK>>
+  --
+  * user_id : BIGINT <<FK>>
+  * key : CHAR(48) <<uk, 部分索引>> (sk- 前缀不入库)
+  * status : INT (1启用/2禁用/3过期/4额度耗尽)
+  name : VARCHAR(64)
+  * remain_quota : BIGINT; unlimited_quota : BOOLEAN
+  model_limits_enabled : BOOLEAN; model_limits : TEXT
+  allow_ips : TEXT (换行分隔 CIDR)
+  used_quota : BIGINT
+  group : VARCHAR(64) (非空覆盖用户分组)
+  cross_group_retry : BOOLEAN
+  created_time / accessed_time / expired_time : BIGINT (-1 永不过期)
+  deleted_at : TIMESTAMPTZ
+}
+
+entity "channels" as channels {
+  * id : BIGSERIAL <<PK>>
+  --
+  * type : INT (渠道类型→ApiType)
+  * key : TEXT (多 key 换行分隔)
+  * status : INT (1启用/2手动禁用/3自动禁用)
+  name : VARCHAR(64); tag : VARCHAR(64) <<idx>>
+  weight : BIGINT; priority : BIGINT
+  group : VARCHAR(64) (逗号分隔); models : TEXT (逗号分隔)
+  model_mapping / param_override / header_override : JSONB
+  base_url : VARCHAR(255); setting / other_settings / channel_info : JSONB
+  channel_info 含 multi-key 状态(MultiKeyMode random/polling、逐 key 状态)
+  auto_ban : INT; status_code_mapping : VARCHAR(1024)
+  balance : DOUBLE PRECISION; used_quota : BIGINT
+  created_time / test_time / response_time : BIGINT
+}
+
+entity "abilities" as abilities {
+  * group : VARCHAR(64) <<PK 复合>>
+  * model : VARCHAR(255) <<PK 复合>>
+  * channel_id : BIGINT <<PK 复合,FK>>
+  --
+  enabled : BOOLEAN
+  priority : BIGINT <<idx>>; weight : BIGINT <<idx>>
+  tag : VARCHAR(64) <<idx>>
+}
+
+entity "logs" as logs {
+  * id : BIGSERIAL <<PK>>
+  --
+  * user_id : BIGINT <<idx_created_at_id, idx_user_id_id>>
+  * created_at : BIGINT
+  type : INT (0未知/1充值/2消费/3管理/4系统/5错误/6退款)
+  content : TEXT; username / token_name : VARCHAR
+  model_name : VARCHAR(128); quota : BIGINT
+  prompt_tokens / completion_tokens : BIGINT
+  use_time : INT; is_stream : BOOLEAN
+  channel_id / token_id : BIGINT; group : VARCHAR(64)
+  ip : VARCHAR(64); request_id : VARCHAR(64)
+  other : JSONB (倍率明细等)
+  request_body / response_body : TEXT (截断 10KB)
+  note:写入独立日志库连接池(LOG_SQL_DSN)
+}
+
+entity "options" as options {
+  * key : VARCHAR(128) <<PK>>
+  --
+  value : TEXT (JSON 字符串或标量;xxx_setting.yyy 走分层配置组)
+}
+
+entity "redemptions" as redemptions {
+  * id : BIGSERIAL <<PK>>
+  --
+  user_id : BIGINT (创建者)
+  * key : CHAR(32) <<uk>>
+  status : INT (1可用/2禁用/3已用)
+  quota : BIGINT; name : VARCHAR(64)
+  used_user_id : BIGINT; redeemed_time / expired_time : BIGINT
+  deleted_at : TIMESTAMPTZ
+}
+
+entity "top_ups" as top_ups {
+  * id : BIGSERIAL <<PK>>
+  --
+  user_id : BIGINT <<FK,idx>>
+  amount : BIGINT (额度); money : NUMERIC(12,2)
+  trade_no : VARCHAR(255) <<uk, 幂等>>
+  payment_method / payment_provider : VARCHAR(50)
+  status : VARCHAR(20) (pending/success/failed/expired)
+  create_time / complete_time : BIGINT
+}
+
+entity "subscription_plans" as sub_plans {
+  * id : BIGSERIAL <<PK>>
+  --
+  title / subtitle : VARCHAR
+  price_amount : NUMERIC(10,6); currency : VARCHAR(8)
+  duration_unit + duration_value / custom_seconds
+  total_amount : BIGINT (0=无限)
+  quota_reset_period / quota_reset_custom_seconds
+  upgrade_group : VARCHAR(64) (购买后升级分组)
+  max_purchase_per_user : INT; enabled : BOOLEAN
+  stripe_price_id / creem_product_id : VARCHAR
+  deleted_at : TIMESTAMPTZ
+}
+
+entity "subscription_orders" as sub_orders {
+  * id : BIGSERIAL <<PK>>
+  --
+  user_id : BIGINT <<FK>>; plan_id : BIGINT <<FK>>
+  money : NUMERIC(12,2)
+  trade_no : VARCHAR(255) <<uk, 幂等>>
+  payment_method / payment_provider : VARCHAR(50)
+  status : VARCHAR(20); provider_payload : TEXT
+  create_time / complete_time : BIGINT
+}
+
+entity "user_subscriptions" as user_subs {
+  * id : BIGSERIAL <<PK>>
+  --
+  user_id : BIGINT <<FK>>; plan_id : BIGINT <<FK>>
+  amount_total / amount_used : BIGINT
+  start_time / end_time : BIGINT <<idx_user_sub_active>>
+  status : VARCHAR(32) (active/expired/cancelled)
+  source : VARCHAR(16) (order/admin)
+  last_reset_time / next_reset_time : BIGINT <<idx>>
+  upgrade_group / prev_user_group : VARCHAR(64) (分组升降级回退)
+}
+
+entity "subscription_pre_consume_records" as sub_pre {
+  * id : BIGSERIAL <<PK>>
+  --
+  request_id : VARCHAR(64) <<uk, 幂等>>
+  user_id : BIGINT; user_subscription_id : BIGINT <<FK>>
+  pre_consumed : BIGINT
+  status : VARCHAR(16) (consumed/refunded)
+}
+
+entity "tasks" as tasks {
+  * id : BIGSERIAL <<PK>>
+  --
+  task_id : VARCHAR(191) <<idx>> (上游任务 id)
+  platform : VARCHAR(30) <<idx>>
+  user_id / channel_id : BIGINT <<FK,idx>>
+  action : VARCHAR(40); status : VARCHAR(20) <<CAS 终态>>
+  quota : BIGINT; progress : VARCHAR
+  properties : JSONB (input、upstream/origin model)
+  private_data : JSONB (敏感:上游 key、计费快照)
+  data : JSONB; fail_reason : TEXT
+  submit_time / start_time / finish_time : BIGINT
+}
+
+entity "midjourneys" as mjs {
+  * id : BIGSERIAL <<PK>>
+  --
+  user_id : BIGINT <<FK,idx>>; channel_id : BIGINT <<FK>>
+  code : INT; action : VARCHAR(40); mj_id : VARCHAR <<idx>>
+  prompt / prompt_en : TEXT; state : VARCHAR
+  image_url / video_url : TEXT; buttons / properties : JSONB
+  status : VARCHAR; progress : VARCHAR; quota : BIGINT
+  submit_time / start_time / finish_time : BIGINT
+}
+
+entity "models" as models {
+  * id : BIGSERIAL <<PK>>
+  --
+  model_name : VARCHAR(128) <<uk, 部分索引>>
+  vendor_id : BIGINT <<FK,idx>>
+  description : TEXT; icon : VARCHAR(128); tags : VARCHAR(255)
+  endpoints : JSONB (自定义端点覆盖)
+  name_rule : INT (0精确/1前缀/2包含/3后缀)
+  sync_official : BOOLEAN; status : INT
+  created_time / updated_time : BIGINT
+  deleted_at : TIMESTAMPTZ
+}
+
+entity "vendors" as vendors {
+  * id : BIGSERIAL <<PK>>
+  --
+  name : VARCHAR(128) <<uk, 部分索引>>
+  description : TEXT; icon : VARCHAR(128); status : INT
+  deleted_at : TIMESTAMPTZ
+}
+
+entity "checkins" as checkins {
+  * id : BIGSERIAL <<PK>>
+  --
+  user_id : BIGINT <<FK; uk(user_id, checkin_date)>>
+  checkin_date : VARCHAR(10) (YYYY-MM-DD)
+  quota_awarded : BIGINT; created_at : BIGINT
+}
+
+entity "passkey_credentials" as passkeys {
+  * id : BIGSERIAL <<PK>>
+  --
+  user_id : BIGINT <<FK,uk>>
+  credential_id : VARCHAR(512) <<uk>> (base64)
+  public_key : TEXT; aaguid / transports : VARCHAR
+  sign_count : INT; webauthn 标志位
+  created_at / updated_at : TIMESTAMPTZ
+  deleted_at : TIMESTAMPTZ
+}
+
+entity "two_fas" as twofas {
+  * id : BIGSERIAL <<PK>>
+  --
+  user_id : BIGINT <<FK,uk>>
+  secret : VARCHAR(255) (TOTP,不出 API)
+  is_enabled : BOOLEAN; failed_attempts : INT
+  locked_until / last_used_at : TIMESTAMPTZ
+  deleted_at : TIMESTAMPTZ
+}
+
+entity "two_fa_backup_codes" as backup_codes {
+  * id : BIGSERIAL <<PK>>
+  --
+  two_fa_id : BIGINT <<FK>>
+  code_hash : VARCHAR(255); is_used : BOOLEAN; used_at : TIMESTAMPTZ
+}
+
+entity "user_oauth_bindings" as oauth_bindings {
+  * id : BIGSERIAL <<PK>>
+  --
+  user_id : BIGINT <<FK; uk(user_id, provider_id)>>
+  provider_id : BIGINT <<FK; uk(provider_id, provider_user_id)>>
+  provider_user_id : VARCHAR(256)
+}
+
+entity "custom_oauth_providers" as custom_oauth {
+  * id : BIGSERIAL <<PK>>
+  --
+  slug : VARCHAR(64) <<uk>>
+  client_id / client_secret : VARCHAR
+  authorization_endpoint / token_endpoint / user_info_endpoint : VARCHAR
+  well_known : VARCHAR (OIDC 发现)
+  field_mapping / access_policy : JSONB
+}
+
+entity "prefill_groups" as prefill {
+  * id : BIGSERIAL <<PK>>
+  --
+  name : VARCHAR(64) <<uk, 部分索引>>
+  type : VARCHAR(32) (model/tag/endpoint)
+  items : JSONB
+  deleted_at : TIMESTAMPTZ
+}
+
+entity "quota_data" as quota_data {
+  * id : BIGSERIAL <<PK>>
+  --
+  user_id : BIGINT; username : VARCHAR(64)
+  model_name : VARCHAR(128) <<idx_qdt_model_user_name>>
+  created_at : BIGINT (按小时取整)
+  token_used / count / quota : BIGINT
+}
+
+entity "file_objects" as file_objects {
+  * id : BIGSERIAL <<PK>>
+  --
+  user_id / request_id / task_id / channel_id
+  direction : VARCHAR(16); source_kind : VARCHAR(32)
+  source_hash : CHAR(64) <<uk 组合 idx_file_object_task_archive_identity>>
+  bucket / object_key / etag / sha256 : VARCHAR
+  size : BIGINT; status : VARCHAR; error_message : TEXT
+}
+
+entity "setups" as setups {
+  * id : BIGSERIAL <<PK>>
+  --
+  version : VARCHAR(50); initialized_at : BIGINT
+}
+
+' ---------- 关系 ----------
+users ||--o{ tokens : "1:N"
+users ||--o{ logs : "1:N"
+users ||--o{ top_ups : "1:N"
+users ||--o{ checkins : "1:N"
+users ||--o{ user_subs : "1:N"
+users ||--o{ oauth_bindings : "1:N"
+users ||--o{ tasks : "1:N"
+users ||--o{ mjs : "1:N"
+users ||--|| twofas : "1:1"
+users ||--o| passkeys : "1:N"
+twofas ||--o{ backup_codes : "1:N"
+channels ||--o{ abilities : "1:N(同步维护)"
+channels ||--o{ tasks : "1:N"
+sub_plans ||--o{ sub_orders : "1:N"
+sub_plans ||--o{ user_subs : "1:N"
+users ||--o{ sub_orders : "1:N"
+user_subs ||--o{ sub_pre : "1:N"
+vendors ||--o{ models : "1:N"
+custom_oauth ||--o{ oauth_bindings : "1:N"
+redemptions }o--|| users : "used_user_id"
+
+@enduml

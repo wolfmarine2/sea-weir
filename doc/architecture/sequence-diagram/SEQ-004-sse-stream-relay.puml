@@ -1,0 +1,58 @@
+@startuml SEQ-004-sse-stream-relay
+!pragma teoz true
+title SEQ-004: 流式 SSE 转发与 usage 注入时序图 (SSE Stream Relay Sequence)
+skinparam backgroundColor #FFFFFF
+skinparam sequenceMessageAlign center
+
+' 参与者定义 - 使用容器名称(来自 C4 L2 设计)
+actor "AI 客户端" as ai_client
+participant "api_server\n(axum :8080)" as api_server
+participant "relay_engine\n(中继管线)" as relay_engine
+participant "upstream_llm\n(上游模型提供方)" as upstream_llm
+
+ai_client -> api_server : POST /v1/chat/completions {\"stream\":true} [同步]
+activate api_server
+note over api_server : 认证/限流/分发/预估/预扣已完成(见 SEQ-002/003)
+
+api_server -> relay_engine : relay(stream) [同步]
+activate relay_engine
+relay_engine -> upstream_llm : HTTPS POST(stream) [同步]
+activate upstream_llm
+upstream_llm --> relay_engine : 200 text/event-stream
+relay_engine --> api_server : 200 响应头\n(Content-Type: text/event-stream)
+api_server --> ai_client : 响应头(首字节时间记录)
+deactivate api_server
+
+== 流式转发循环(stream_pipe) ==
+loop 每个 SSE 事件
+  upstream_llm --> relay_engine : data: chunk
+  relay_engine -> relay_engine : 行扫描;延迟一拍保留 lastStreamData\n按入口格式改写(OpenAI原样/转Claude/转Gemini)
+  relay_engine -> ai_client : data: chunk [同步写出]
+end
+
+group 看门狗(与转发循环并行)
+  alt 空闲超 StreamingTimeout
+    relay_engine -> relay_engine : 判超时,终止流(StreamStatus=timeout)
+  else ping 保活(每 10s)
+    relay_engine -> ai_client : : ping [异步]
+  else 客户端断开
+    relay_engine -> relay_engine : 终止流(StreamStatus=client_gone)
+  end
+end
+
+== 收尾 ==
+upstream_llm --> relay_engine : data: [DONE] / EOF
+deactivate upstream_llm
+alt 上游末 chunk 含 usage
+  relay_engine -> relay_engine : 用户未要求 include_usage 且无内容 → 吞掉
+else 用户要求 include_usage 但上游未给
+  relay_engine -> relay_engine : 本地估算生成 usage chunk 注入
+  relay_engine -> ai_client : data: {usage:{...}} [同步]
+end
+relay_engine -> ai_client : data: [DONE]
+relay_engine -> relay_engine : 按 usage 结算(SEQ-003)\n记录 StreamStatus(done/timeout/client_gone)
+deactivate relay_engine
+
+note over relay_engine, upstream_llm : WebSocket(realtime)变体:\n双向 pipe;上游 response.done 事件 → 增量扣费(预扣-即结算);\n连接结束按 sumUsage 总结算记日志
+
+@enduml

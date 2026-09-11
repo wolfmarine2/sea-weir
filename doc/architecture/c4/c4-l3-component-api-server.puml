@@ -1,0 +1,40 @@
+@startuml
+
+!include <C4/C4_Component>
+
+title C4 L3 Component - api_server(sea-weir)
+
+' ============================================================
+' api_server(axum :8080)组件图:统一 HTTP 入口。
+' 组件对应 sea-weir-server crate 内的模块。
+' ============================================================
+
+Container_Boundary(api_server, "api_server (Rust / axum :8080)") {
+  Component(router, "router", "Rust module", "四路由面注册:api(管理面)/ relay(中继面)/ dashboard(兼容面)/ web(静态面),中间件挂载")
+  Component(auth_middleware, "auth_middleware", "Rust module", "session Cookie / access token / sk-token 三级认证;New-Api-User 防串号;UserAuth/AdminAuth/RootAuth/TokenAuth 闸门")
+  Component(rate_limit, "rate_limit", "Rust module", "IP/用户维度滑动窗口限流(Valkey/内存降级);模型请求限流(总次数令牌桶+成功次数窗口)")
+  Component(distribute_middleware, "distribute_middleware", "Rust module", "中继面渠道分发:模型/relay 模式解析、亲和性命中、渠道上下文注入")
+  Component(admin_handlers, "admin_handlers", "Rust modules ×16 域", "管理面编排:user/token/channel/log/option/redemption/topup/subscription/pricing/models/vendors/group/task/data/performance/oauth")
+  Component(relay_entry, "relay_entry", "Rust module", "中继面入口:请求校验、重试循环、错误出口格式化")
+  Component(response, "response", "Rust module", "统一出口:{success,message,data} / OpenAI / Claude / MJ 错误格式;敏感信息打码;panic 兜底")
+  Component(config, "config", "Rust module", "Nacos > env > YAML 三层配置;options 表热更(进程内缓存 + pub/sub 失效)")
+}
+
+Container_Ext(admin_engine, "admin_engine", "来自 L2", "管理业务编排")
+Container_Ext(relay_engine, "relay_engine", "来自 L2", "中继管线")
+Container_Ext(redis_cache, "redis_cache", "来自 L2", "限流/吊销/令牌缓存")
+
+Rel(router, auth_middleware, "挂载")
+Rel(router, rate_limit, "挂载")
+Rel(router, distribute_middleware, "挂载(中继面)")
+Rel(auth_middleware, redis_cache, "会话吊销/令牌缓存查询")
+Rel(rate_limit, redis_cache, "滑动窗口计数")
+Rel(distribute_middleware, relay_engine, "选渠/渠道上下文")
+Rel(admin_handlers, admin_engine, "域业务调用")
+Rel(relay_entry, relay_engine, "中继执行")
+Rel(admin_handlers, response, "统一出口")
+Rel(relay_entry, response, "统一出口")
+
+SHOW_LEGEND()
+
+@enduml

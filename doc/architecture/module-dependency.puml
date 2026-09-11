@@ -1,0 +1,99 @@
+@startuml
+!pragma teoz true
+
+title sea-weir - 模块依赖图(后端 Workspace Crate + 前端分层)
+
+' ============================================================
+' 依赖方向只允许自上而下(入口层 → 业务层 → 数据层 → 基础层)
+' 与 code/backend/Cargo.toml workspace 定义保持一致
+' ============================================================
+
+skinparam packageStyle rectangle
+skinparam backgroundColor #FEFEFE
+skinparam component {
+  FontSize 12
+  BorderColor #4472C4
+  FontColor #1A1A1A
+  BackgroundColor #D6E4F0
+}
+
+skinparam database {
+  BorderColor #548235
+  BackgroundColor #E2EFDA
+  FontColor #1A1A1A
+}
+
+skinparam actor {
+  BorderColor #7F6000
+  BackgroundColor #FFF2CC
+}
+
+actor "浏览器 / AI 客户端" as Client
+
+package "sea-weir-server\n二进制入口层" as server {
+  component "main.rs\n启动装配" as MainEntry
+  component "router/\n四路由面" as Router
+  component "middleware/\n认证/限流/分发" as Middleware
+  component "handlers/\n16 管理域 + relay 入口" as Handlers
+  note right of MainEntry
+    clap 解析 -c 配置路径
+    配置加载(Nacos > env > YAML)
+    sqlx 双连接池(主库/日志库)
+    Valkey 客户端 + pub/sub 订阅
+    Arc<AppState> 共享状态
+    后台任务(渠道缓存同步/任务轮询/对账)
+    tokio::spawn axum 服务
+    signal::ctrl_c() 优雅关闭
+  end note
+}
+
+package "sea-weir-core\n业务逻辑层" as core {
+  component "admin/\n管理域业务" as AdminCore
+  component "relay/\n中继引擎" as RelayCore
+  component "relay/billing.rs\n计费状态机" as Billing
+  component "relay/select.rs channel_cache.rs\n选路与渠道索引" as Select
+  component "relay/stream.rs task_polling.rs autoban.rs\n流式/任务/禁用" as StreamOps
+}
+
+package "sea-weir-adaptors\n渠道适配层" as adaptors {
+  component "Adaptor / TaskAdaptor trait\n+ 35 同步渠道(ApiType)+ 10 任务平台" as AdaptorImpl
+}
+
+package "sea-weir-repository\n数据访问层" as repo {
+  component "Repository Trait + sqlx 实现\n+ Valkey 读穿/失效广播" as Repo
+}
+
+package "sea-weir-types\n基础类型层" as types {
+  component "领域模型 / DTO / AppError\nNewApiError / 常量 / 分层配置" as Types
+}
+
+database "openGauss\n(主库+日志库)" as DB
+database "Valkey\n(缓存/限流/吊销)" as Cache
+
+Client --> server
+server --> core
+core --> adaptors
+core --> repo
+adaptors --> types
+repo --> types
+core --> types
+server --> types
+repo --> DB
+repo --> Cache
+
+note bottom of adaptors : adaptors 不依赖 repository(渠道数据经 core 注入),依赖方向无环
+
+' ---------- 前端分层(独立构建,经 HTTP 依赖后端) ----------
+package "code/frontend(React SPA)" as frontend {
+  component "pages\n页面层" as Pages
+  component "components / hooks\n通用组件层" as Components
+  component "api\nAPI 层(axios)" as ApiLayer
+  component "stores\n状态层(zustand)" as Stores
+}
+
+Pages --> Components
+Components --> ApiLayer
+ApiLayer --> Stores
+ApiLayer ..> server : HTTP /api、/pg
+
+@enduml

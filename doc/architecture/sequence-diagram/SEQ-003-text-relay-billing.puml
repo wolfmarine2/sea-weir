@@ -1,0 +1,72 @@
+@startuml SEQ-003-text-relay-billing
+!pragma teoz true
+title SEQ-003: 文本中继计费全流程时序图 (Text Relay Billing Sequence)
+skinparam backgroundColor #FFFFFF
+skinparam sequenceMessageAlign center
+
+' 参与者定义 - 使用容器名称(来自 C4 L2 设计)
+actor "AI 客户端" as ai_client
+participant "api_server\n(axum :8080)" as api_server
+participant "relay_engine\n(中继管线)" as relay_engine
+participant "repository_layer\n(数据访问层)" as repository
+database "opengauss_db\n(数据库)" as opengauss
+participant "upstream_llm\n(上游模型提供方)" as upstream_llm
+
+ai_client -> api_server : POST /v1/chat/completions [同步]
+activate api_server
+note over api_server : TokenAuth + 限流 + Distribute 已通过(见 SEQ-002)
+
+api_server -> relay_engine : relay(request, channel_ctx) [同步]
+activate relay_engine
+
+== 计费前段:预估与预扣 ==
+relay_engine -> relay_engine : 校验请求 / 敏感词检查\n预估 prompt tokens(tiktoken-rs)
+relay_engine -> relay_engine : ModelPriceHelper 计算 PriceData\n(模型倍率/价格、分组倍率、缓存倍率)
+note right of relay_engine : QuotaToPreConsume =\n max(promptTokens, PreConsumedQuota)+maxTokens × ratio\n按次:modelPrice × QuotaPerUnit × groupRatio
+
+relay_engine -> repository : pre_consume(token_id, user_id, quota, request_id) [同步]
+activate repository
+repository -> opengauss : UPDATE tokens SET remain_quota=remain_quota-$1\nWHERE id=$2 AND remain_quota>=$1 [同步,原子]
+opengauss --> repository : 1 row
+repository -> opengauss : 钱包:UPDATE users SET quota=quota-$1 WHERE id=$2 AND quota>=$1\n或订阅:BEGIN; SELECT ... FOR UPDATE; INSERT pre_consume_records(request_id) [同步,幂等]
+alt 预扣成功
+  opengauss --> repository : ok
+else 余额不足
+  repository --> relay_engine : Err(QuotaExceeded),回滚已扣令牌额度
+  relay_engine --> api_server : NewApiError(insufficient_quota)
+  api_server --> ai_client : 403 {"error":{"type":"insufficient_quota"}}
+end
+deactivate repository
+
+== 上游调用 ==
+relay_engine -> relay_engine : adaptor.convert_request(格式转换)\n应用 model_mapping/param_override/header_override
+relay_engine -> upstream_llm : HTTPS POST 上游端点 [同步]
+activate upstream_llm
+
+alt 上游成功(2xx)
+  upstream_llm --> relay_engine : 响应(含 usage)
+  deactivate upstream_llm
+  == 计费后段:按实际 usage 结算 ==
+  relay_engine -> relay_engine : rust_decimal 精确计算实际额度\n(缓存/图片/音频/工具附加费/阶梯表达式)
+  relay_engine -> repository : settle(request_id, actual_quota) [同步]
+  activate repository
+  repository -> opengauss : 差额补扣/退还(users/tokens 原子更新)\n+ INSERT logs(type=2, 倍率明细 other JSONB) [同步]
+  opengauss --> repository : ok
+  deactivate repository
+  relay_engine --> api_server : 响应(usage 提取)
+  api_server --> ai_client : 200 上游原生格式
+  note over api_server : 结算后不退(settled 终态)
+else 上游错误
+  upstream_llm --> relay_engine : 4xx/5xx/网络错误
+  deactivate upstream_llm
+  relay_engine -> relay_engine : RelayErrorHandler 归一化\n(状态码映射可配;敏感信息打码)
+  relay_engine -> repository : refund(request_id) [异步,幂等]
+  note right of repository : Settle 与 Refund 互斥\n(settled/fundingSettled 标志)
+  relay_engine --> api_server : NewApiError(可重试?见 SEQ-005)
+  api_server --> ai_client : {"error":{...}} (request id)
+end
+
+deactivate relay_engine
+deactivate api_server
+
+@enduml

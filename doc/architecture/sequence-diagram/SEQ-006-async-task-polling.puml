@@ -1,0 +1,67 @@
+@startuml SEQ-006-async-task-polling
+!pragma teoz true
+title SEQ-006: 异步任务提交与轮询结算时序图 (Async Task Submit & Polling Sequence)
+skinparam backgroundColor #FFFFFF
+skinparam sequenceMessageAlign center
+
+' 参与者定义 - 使用容器名称(来自 C4 L2 设计)
+actor "AI 客户端" as ai_client
+participant "api_server\n(axum :8080)" as api_server
+participant "relay_engine\n(中继管线)" as relay_engine
+participant "repository_layer\n(数据访问层)" as repository
+database "opengauss_db\n(数据库)" as opengauss
+participant "upstream_llm\n(上游任务平台)" as upstream_llm
+
+== 提交阶段 ==
+ai_client -> api_server : POST /v1/video/generations [同步]
+activate api_server
+api_server -> relay_engine : relay_task(request) [同步]
+activate relay_engine
+note over relay_engine : remix 场景:ResolveOriginTask 锁定原任务渠道
+relay_engine -> relay_engine : TaskAdaptor 校验/设 action/模型映射\nEstimateBilling(时长/分辨率 OtherRatios)
+relay_engine -> repository : pre_consume(全额,ForcePreConsume) [同步]
+repository -> opengauss : 原子扣减 [同步]
+opengauss --> repository : ok
+relay_engine -> upstream_llm : 提交任务 [同步]
+activate upstream_llm
+upstream_llm --> relay_engine : task_id(上游)
+deactivate upstream_llm
+relay_engine -> repository : init_task(...).insert() [同步]
+repository -> opengauss : INSERT tasks\n(公开 task_id + PrivateData 计费快照) [同步]
+opengauss --> repository : ok
+relay_engine -> relay_engine : AdjustBillingOnSubmit 修正额度 → settle
+relay_engine --> api_server : 任务句柄
+api_server --> ai_client : 200 {task_id, status:SUBMITTED}
+deactivate relay_engine
+deactivate api_server
+
+== 轮询阶段(后台 15s 循环) ==
+loop 每 15s
+  relay_engine -> repository : sweep_timed_out_tasks() [同步]
+  note right of relay_engine : CAS 置失败 + RefundTaskQuota
+  relay_engine -> repository : get_unfinished_tasks(limit) [同步]
+  repository -> opengauss : SELECT tasks WHERE status NOT IN (SUCCESS,FAILURE) [同步]
+  opengauss --> repository : tasks
+  relay_engine -> relay_engine : 按平台分组 DispatchPlatformUpdate
+
+  loop 每个任务(同渠道间隔 1s 防限流)
+    relay_engine -> upstream_llm : FetchTask(task_id) [同步]
+    activate upstream_llm
+    upstream_llm --> relay_engine : TaskResult(进度/终态)
+    deactivate upstream_llm
+    relay_engine -> relay_engine : ParseTaskResult
+    alt 成功终态
+      relay_engine -> repository : cas_status(id, 进行中→SUCCESS) [同步]
+      repository -> opengauss : UPDATE ... WHERE status=$old [同步,CAS]
+      relay_engine -> repository : 结算:AdjustBillingOnComplete 补差\n或按 TotalTokens 重算 [同步]
+    else 失败终态
+      relay_engine -> repository : cas_status(id, 进行中→FAILURE) + 退款 [同步]
+    else 进行中
+      relay_engine -> repository : 更新进度 [同步]
+    end
+  end
+end
+
+note over relay_engine, upstream_llm : Gemini/Vertex 渠道的任务查询走实时回源(tryRealtimeFetch),\nOpenAI 视频格式经 OpenAIVideoConverter 转换
+
+@enduml

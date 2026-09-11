@@ -1,0 +1,71 @@
+@startuml SEQ-005-channel-retry-autoban
+!pragma teoz true
+title SEQ-005: 渠道重试与自动禁用时序图 (Channel Retry & Auto-ban Sequence)
+skinparam backgroundColor #FFFFFF
+skinparam sequenceMessageAlign center
+
+' 参与者定义 - 使用容器名称(来自 C4 L2 设计)
+actor "AI 客户端" as ai_client
+participant "api_server\n(axum :8080)" as api_server
+participant "relay_engine\n(中继管线)" as relay_engine
+participant "repository_layer\n(数据访问层)" as repository
+participant "redis_cache\n(Valkey)" as redis_cache
+participant "upstream_llm\n(上游模型提供方)" as upstream_llm
+
+ai_client -> api_server : POST /v1/chat/completions [同步]
+activate api_server
+api_server -> relay_engine : relay(retry 循环, 最大 RetryTimes+1 次) [同步]
+activate relay_engine
+
+loop 重试循环(retry = 0..RetryTimes)
+  relay_engine -> relay_engine : select_channel(group, model, retry)\n第 retry 高优先级档,档内加权随机\n重建渠道上下文(含 multi-key 换 key)
+  relay_engine -> upstream_llm : HTTPS 调用 [同步]
+  activate upstream_llm
+
+  alt 成功(2xx)
+    upstream_llm --> relay_engine : 响应
+    deactivate upstream_llm
+    relay_engine --> api_server : 成功(结算见 SEQ-003)
+    api_server --> ai_client : 200
+    relay_engine -> redis_cache : RecordChannelAffinity [异步]
+  else 可重试错误
+    upstream_llm --> relay_engine : 401/429/5xx/网络错误
+    deactivate upstream_llm
+    relay_engine -> relay_engine : RelayErrorHandler 归一化\nshouldRetry 判定
+    note right of relay_engine : 不重试:400/408/504/524、\nspecific_channel_id、SkipRetryOnFailure、\nIsAlwaysSkipRetryCode
+    relay_engine -> repository : record_error_log(渠道链/请求快照) [异步]
+    relay_engine -> relay_engine : autoban 判定:\n命中禁用状态码(默认401)或关键词?
+    alt 触发禁用
+      relay_engine -> repository : update_status(channel_id, 3, reason) [异步]
+      repository -> redis_cache : publish cache:invalidate:channel [异步]
+      relay_engine -> relay_engine : 渠道索引即时摘除\n(多 key 按 key 粒度禁用,全禁才整渠道)
+      relay_engine -> api_server : NotifyRootUser [异步]
+    end
+    note right of relay_engine : 进入下一档重试(退款在最终失败时统一处理)
+  else 不可重试错误
+    upstream_llm --> relay_engine : 400 等
+    deactivate upstream_llm
+    relay_engine --> api_server : NewApiError(退款,见 SEQ-003)
+    api_server --> ai_client : 4xx {"error":{...}}
+  end
+end
+
+alt 重试耗尽
+  relay_engine --> api_server : 最后一个错误(退款)
+  api_server --> ai_client : {"error":{...}} (request id)
+end
+
+deactivate relay_engine
+deactivate api_server
+
+== 渠道恢复(旁路) ==
+api_server -> relay_engine : 渠道测试(手动/定时) [异步]
+activate relay_engine
+relay_engine -> upstream_llm : 测试模型请求 [同步]
+alt 测试通过且开启自动恢复
+  relay_engine -> repository : update_status(channel_id, 1) [同步]
+  repository -> redis_cache : publish cache:invalidate:channel [异步]
+end
+deactivate relay_engine
+
+@enduml
