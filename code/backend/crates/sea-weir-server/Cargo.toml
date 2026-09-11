@@ -1,0 +1,52 @@
+[package]
+name = "sea-weir-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "二进制入口:axum :8080,四个路由面 + 中间件链 + 16 管理域 handlers + 中继入口。"
+
+# lib + bin 双目标:lib 供测试 crate 导入 router / middleware 做自省与单测,
+# bin 是实际入口。见 test/cases/11-route-completeness.md。
+[lib]
+name = "sea_weir_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sea-weir-server"
+path = "src/main.rs"
+
+[dependencies]
+sea-weir-types.workspace = true
+sea-weir-repository.workspace = true
+sea-weir-adaptors.workspace = true
+sea-weir-core.workspace = true
+tokio.workspace = true
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+hyper.workspace = true
+http.workspace = true
+bytes.workspace = true
+tokio-tungstenite.workspace = true
+sqlx.workspace = true
+fred.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+clap.workspace = true
+config.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+jsonwebtoken.workspace = true
+webauthn-rs.workspace = true
+rust-embed.workspace = true
+uuid.workspace = true
+async-trait.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+rstest.workspace = true
+tokio-test.workspace = true
+wiremock.workspace = true
+pretty_assertions.workspace = true

@@ -1,0 +1,84 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/sea-weir-types",
+    "crates/sea-weir-repository",
+    "crates/sea-weir-adaptors",
+    "crates/sea-weir-core",
+    "crates/sea-weir-server",
+]
+
+# 依赖方向(doc/architecture/module-dependency.puml,单向无环):
+#   sea-weir-server → sea-weir-core → sea-weir-repository → sea-weir-types
+#   sea-weir-core   → sea-weir-adaptors → sea-weir-types
+#   sea-weir-server → sea-weir-types
+# 约束:types 不依赖任何内部 crate;repository 不依赖 core/adaptors;
+#      adaptors 不依赖 repository(渠道数据经 core 注入)。
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+# --- 内部 crate ---
+sea-weir-types = { path = "crates/sea-weir-types" }
+sea-weir-repository = { path = "crates/sea-weir-repository" }
+sea-weir-adaptors = { path = "crates/sea-weir-adaptors" }
+sea-weir-core = { path = "crates/sea-weir-core" }
+
+# --- 运行时与 HTTP(system-design.md §4.2)---
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["ws", "macros"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "compression-gzip", "timeout", "trace"] }
+hyper = "1"
+http = "1"
+bytes = "1"
+tokio-tungstenite = "0.26"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "multipart"] }
+
+# --- 数据与缓存 ---
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "macros", "chrono", "json", "rust_decimal", "migrate"] }
+fred = { version = "10", features = ["subscriber-client"] }
+moka = { version = "0.12", features = ["future"] }
+
+# --- 序列化与类型 ---
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rust_decimal = { version = "1", features = ["serde-with-float"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# --- 安全 ---
+jsonwebtoken = "9"
+bcrypt = "0.16"
+totp-rs = { version = "5", features = ["otpauth"] }
+webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation"] }
+hmac = "0.12"
+sha2 = "0.10"
+
+# --- 其他 ---
+tiktoken-rs = "0.6"
+rand = "0.8"
+rust-embed = "8"
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+async-trait = "0.1"
+thiserror = "2"
+anyhow = "1"
+config = { version = "0.15", default-features = false, features = ["yaml"] }
+
+# --- 测试(TDD 阶段主力)---
+rstest = "0.24"
+mockall = "0.13"
+wiremock = "0.6"
+tokio-test = "0.4"
+pretty_assertions = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

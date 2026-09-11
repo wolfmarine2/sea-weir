@@ -1,0 +1,36 @@
+[package]
+name = "sea-weir-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "业务逻辑层:admin_engine(16 管理域)+ relay_engine(选路/计费/流式/任务/禁用/转换)。"
+
+[dependencies]
+sea-weir-types.workspace = true
+sea-weir-repository.workspace = true
+sea-weir-adaptors.workspace = true
+tokio.workspace = true
+bytes.workspace = true
+http.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rust_decimal.workspace = true
+chrono.workspace = true
+moka.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+tiktoken-rs.workspace = true
+rand.workspace = true
+bcrypt.workspace = true
+totp-rs.workspace = true
+jsonwebtoken.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+sea-weir-repository = { workspace = true, features = ["mock"] }
+rstest.workspace = true
+mockall.workspace = true
+tokio-test.workspace = true
+wiremock.workspace = true
+pretty_assertions.workspace = true

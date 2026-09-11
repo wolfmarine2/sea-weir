@@ -1,0 +1,37 @@
+use async_trait::async_trait;
+use sea_weir_types::{domain::Channel, AppResult};
+
+#[cfg_attr(feature = "mock", mockall::automock)]
+#[async_trait]
+pub trait ChannelRepository: Send + Sync {
+    /// 渠道索引全量重建用。
+    async fn list_enabled(&self) -> AppResult<Vec<Channel>>;
+    async fn find_by_id(&self, id: i64) -> AppResult<Option<Channel>>;
+
+    async fn create(&self, channel: &Channel) -> AppResult<i64>;
+    async fn update(&self, channel: &Channel) -> AppResult<()>;
+    async fn delete(&self, id: i64) -> AppResult<()>;
+
+    /// 状态变更(含自动禁用)。`reason` 进审计日志。
+    /// 后置:必须触发渠道索引失效广播。
+    async fn update_status(&self, id: i64, status: i32, reason: &str) -> AppResult<()>;
+
+    /// 多 key 渠道按 key 粒度禁用,状态写入 `channel_info` JSONB。
+    async fn disable_key(&self, id: i64, key_index: usize, reason: &str) -> AppResult<()>;
+
+    /// 同步 abilities 三元组。
+    ///
+    /// 不变量:**事务内先删后插**,失败整体回滚;成功后广播索引失效。
+    async fn sync_abilities(&self, channel: &Channel) -> AppResult<()>;
+
+    async fn update_balance(&self, id: i64, balance: f64, ts: i64) -> AppResult<()>;
+    async fn record_test_result(&self, id: i64, response_time_ms: i64, ts: i64) -> AppResult<()>;
+}
+
+#[cfg(test)]
+mod tests {
+    // TDD 入口:
+    // - [ ] sync_abilities 中途失败 → abilities 表回到调用前状态(无半删)
+    // - [ ] update_status 后 list_enabled 不再含该渠道
+    // - [ ] disable_key 只影响指定下标,其余 key 仍可用
+}

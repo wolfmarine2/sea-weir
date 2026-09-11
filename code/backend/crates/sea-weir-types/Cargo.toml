@@ -1,0 +1,20 @@
+[package]
+name = "sea-weir-types"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "领域模型 / DTO / AppError / 常量 / 分层配置。基础层,不依赖任何内部 crate。"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+rust_decimal.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+http.workspace = true
+bytes.workspace = true
+
+[dev-dependencies]
+rstest.workspace = true
+pretty_assertions.workspace = true

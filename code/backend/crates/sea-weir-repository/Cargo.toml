@@ -1,0 +1,36 @@
+[package]
+name = "sea-weir-repository"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Repository Trait + sqlx(openGauss)实现 + Valkey 读穿与失效广播。"
+
+[dependencies]
+sea-weir-types.workspace = true
+sqlx.workspace = true
+fred.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+rust_decimal.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+rstest.workspace = true
+mockall.workspace = true
+tokio.workspace = true
+tokio-test.workspace = true
+pretty_assertions.workspace = true
+
+[features]
+default = []
+# 为 core 层单测提供 Repository Trait 的 mock 实现
+mock = ["dep:mockall"]
+
+[dependencies.mockall]
+workspace = true
+optional = true

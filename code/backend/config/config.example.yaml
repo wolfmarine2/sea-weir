@@ -1,0 +1,37 @@
+# sea-weir 后端配置示例。
+# 加载优先级:Nacos 下发 > 环境变量 > 本文件(doc/system-design.md §9.2)。
+# 密钥类字段生产环境走 K8s Secret 注入,不要写进本文件。
+
+server:
+  port: 8080
+  metrics_port: 8005
+  # K8s 形态为 false(前端由 nginx 托管);单容器形态置 true 用 rust-embed 内嵌
+  embed_frontend: false
+
+database:
+  dsn: "postgres://sea_weir:CHANGE_ME@opengauss:5432/sea_weir"
+  max_connections: 100
+  # 为空则日志表与主库同库(对应 new-api 的 LOG_SQL_DSN 语义)
+  log_dsn: null
+  log_max_connections: 20
+
+cache:
+  url: "redis://valkey:6379"
+  # 鉴权类路径恒 fail-close,此开关只影响非关键路径(ADR-007)
+  fail_open_on_outage: true
+
+session:
+  secret: "CHANGE_ME"
+  ttl_days: 30
+  crypto_secret: "CHANGE_ME"
+
+relay:
+  # 最大尝试次数 = retry_times + 1
+  retry_times: 3
+  upstream_timeout_secs: 600
+  stream_idle_timeout_secs: 120
+  ssrf_allow_private_network: false
+
+telemetry:
+  log_level: "info"
+  json_format: true

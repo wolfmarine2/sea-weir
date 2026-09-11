@@ -1,0 +1,23 @@
+[package]
+name = "sea-weir-adaptors"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Adaptor / TaskAdaptor trait 与注册表:35 个同步渠道适配器 + 10 家异步任务平台。"
+
+[dependencies]
+sea-weir-types.workspace = true
+reqwest.workspace = true
+bytes.workspace = true
+http.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+rstest.workspace = true
+wiremock.workspace = true
+tokio.workspace = true
+pretty_assertions.workspace = true

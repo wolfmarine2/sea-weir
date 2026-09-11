@@ -1,0 +1,5 @@
+[toolchain]
+# 依赖树中多个 crate(clap_lex、base64ct 等)已使用 edition 2024,需 Rust ≥ 1.85。
+# 1.85 是 edition2024 稳定化的版本;此处取一个与生产镜像一致的较新稳定版。
+channel = "1.90"
+components = ["rustfmt", "clippy"]
