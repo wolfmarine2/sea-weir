@@ -1,0 +1,109 @@
+name: Build and Push Images
+
+# 提交即出镜像:
+#   - 推送到默认分支 main  -> :main 与 :latest
+#   - 打 v* tag            -> :vX.Y.Z
+#   - 任意触发             -> :sha-<7位>
+#   - 也可在 Actions 页面手动运行(可选平台与是否推送)
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: '目标平台(逗号分隔)。默认仅 amd64;加 arm64 会走 QEMU,耗时显著增加'
+        required: false
+        default: 'linux/amd64'
+      push:
+        description: '是否推送镜像(false 仅构建验证)'
+        type: boolean
+        default: true
+
+# 推送到 GHCR 需要 packages: write;使用内置 GITHUB_TOKEN,无需配置 Secrets。
+permissions:
+  contents: read
+  packages: write
+
+# 同一分支/tag 的新提交取消上一次未完成的构建。
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.component }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: backend
+            context: code/backend
+            dockerfile: code/backend/Dockerfile
+          - component: frontend
+            context: code/frontend
+            dockerfile: code/frontend/Dockerfile
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # GHCR 要求仓库名全小写;github.repository 可能含大写,统一转换。
+      - name: Compute lowercase repository
+        id: repo
+        run: echo "lc=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: all
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 镜像名:ghcr.io/<owner>/sea-weir/<component>
+      #   backend  -> ghcr.io/wolfmarine2/sea-weir/backend
+      #   frontend -> ghcr.io/wolfmarine2/sea-weir/frontend
+      - name: Generate Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ steps.repo.outputs.lc }}/${{ matrix.component }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push ${{ matrix.component }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ inputs.platforms || 'linux/amd64' }}
+          push: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
+          provenance: false
+          sbom: false
+
+      - name: Summary
+        run: |
+          {
+            echo "### ${{ matrix.component }} 镜像已构建"
+            echo ''
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
