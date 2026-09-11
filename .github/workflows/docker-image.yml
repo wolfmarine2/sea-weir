@@ -1,68 +1,40 @@
-name: Build and Push Images
+name: Build and Push Multi-Arch Docker Image
 
-# 提交即出镜像:
-#   - 推送到默认分支 main  -> :main 与 :latest
-#   - 打 v* tag            -> :vX.Y.Z
-#   - 任意触发             -> :sha-<7位>
-#   - 也可在 Actions 页面手动运行(可选平台与是否推送)
 on:
+  # 支持在 GitHub Actions 页面手动运行
+  workflow_dispatch:
   push:
+    # 分支更新时构建（分支名即镜像 tag）
     branches:
-      - main
+      - v0.0.1
+    # 打 git tag 时也构建（tag 名即镜像 tag）
     tags:
       - 'v*'
-  workflow_dispatch:
-    inputs:
-      platforms:
-        description: '目标平台(逗号分隔)。默认仅 amd64;加 arm64 会走 QEMU,耗时显著增加'
-        required: false
-        default: 'linux/amd64'
-      push:
-        description: '是否推送镜像(false 仅构建验证)'
-        type: boolean
-        default: true
 
-# 推送到 GHCR 需要 packages: write;使用内置 GITHUB_TOKEN,无需配置 Secrets。
+# 需要 packages: write 权限才能推送到 GHCR
 permissions:
   contents: read
   packages: write
 
-# 同一分支/tag 的新提交取消上一次未完成的构建。
-concurrency:
-  group: image-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   build:
-    name: ${{ matrix.component }}
+    name: Build amd64 and arm64
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - component: backend
-            context: code/backend
-            dockerfile: code/backend/Dockerfile
-          - component: frontend
-            context: code/frontend
-            dockerfile: code/frontend/Dockerfile
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      # GHCR 要求仓库名全小写;github.repository 可能含大写,统一转换。
-      - name: Compute lowercase repository
-        id: repo
-        run: echo "lc=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
-
+      # 使用 QEMU 模拟不同 CPU 架构
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
         with:
           platforms: all
 
+      # 启用 Docker Buildx 多架构构建
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # 登录 GHCR（使用内置 GITHUB_TOKEN，无需手动配置 Secrets）
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -70,40 +42,62 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 镜像名:ghcr.io/<owner>/sea-weir/<component>
-      #   backend  -> ghcr.io/wolfmarine2/sea-weir/backend
-      #   frontend -> ghcr.io/wolfmarine2/sea-weir/frontend
-      - name: Generate Docker metadata
-        id: meta
+      # ─────────────────────────── 后端镜像 ───────────────────────────
+      # 镜像名:ghcr.io/<owner>/sea-weir/backend(GHCR 要求仓库名全小写)
+      # 生成镜像标签：
+      #   - ref_name：分支推送时为 v0.0.1，tag 推送时为 tag 名
+      #   - latest：仅在默认分支推送时更新，避免发版分支抢占
+      #   - sha-xxxxxxx：便于精确回滚
+      - name: Generate backend metadata
+        id: meta_backend
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ steps.repo.outputs.lc }}/${{ matrix.component }}
+          images: ghcr.io/${{ github.repository }}/backend
           tags: |
-            type=ref,event=branch
-            type=ref,event=tag
-            type=sha,prefix=sha-
+            type=raw,value=${{ github.ref_name }}
             type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-
 
-      - name: Build and push ${{ matrix.component }}
-        uses: docker/build-push-action@v6
+      # 构建 amd64 和 arm64 并推送到 GHCR
+      # 注意:后端是 Rust + LTO,arm64 经 QEMU 模拟编译整棵依赖树会非常慢
+      #       (可能数小时)。如需稳定出 arm64,建议改用原生 arm64 runner
+      #       (ubuntu-24.04-arm)分架构构建后用 imagetools 合并 manifest。
+      - name: Build and push backend (multi-platform)
+        uses: docker/build-push-action@v5
         with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.dockerfile }}
-          platforms: ${{ inputs.platforms || 'linux/amd64' }}
-          push: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.component }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
-          provenance: false
-          sbom: false
+          context: code/backend
+          file: code/backend/Dockerfile
+          platforms: |
+            linux/amd64
+            linux/arm64
+          push: true
+          tags: ${{ steps.meta_backend.outputs.tags }}
+          labels: ${{ steps.meta_backend.outputs.labels }}
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
 
-      - name: Summary
-        run: |
-          {
-            echo "### ${{ matrix.component }} 镜像已构建"
-            echo ''
-            echo '```'
-            echo "${{ steps.meta.outputs.tags }}"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+      # ─────────────────────────── 前端镜像 ───────────────────────────
+      # 镜像名:ghcr.io/<owner>/sea-weir/frontend,标签策略与后端一致
+      - name: Generate frontend metadata
+        id: meta_frontend
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}/frontend
+          tags: |
+            type=raw,value=${{ github.ref_name }}
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-
+
+      - name: Build and push frontend (multi-platform)
+        uses: docker/build-push-action@v5
+        with:
+          context: code/frontend
+          file: code/frontend/Dockerfile
+          platforms: |
+            linux/amd64
+            linux/arm64
+          push: true
+          tags: ${{ steps.meta_frontend.outputs.tags }}
+          labels: ${{ steps.meta_frontend.outputs.labels }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
