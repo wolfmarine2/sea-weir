@@ -7,27 +7,30 @@
 //! 4. sqlx 双连接池(主库/日志库)+ migrations                ✅(连接池;migrations 见 pool.rs)
 //! 5. Valkey 客户端 + pub/sub 订阅                          ⏳ TODO(TDD)
 //! 6. 适配器注册表构建                                     ⏳ TODO(TDD)
-//! 7. `Arc<AppState>` 组装                                 ⏳ TODO(TDD,依赖 6/8 与 Repository 实现)
+//! 7. `Arc<AppState>` 组装                                 ⏳ TODO(TDD;当前用 ServerState 承载已落地端点)
 //! 8. 后台任务 spawn                                        ⏳ TODO(TDD)
-//! 9. axum 服务启动                                        ✅(当前为引导路由:健康/状态)
+//! 9. axum 服务启动                                        ✅
 //! 10. `signal::ctrl_c()` 优雅关闭                          ✅
 //!
-//! 说明:骨架阶段 `router::build` / `background::spawn_all` 及其依赖的 Repository
-//! 实现尚未落地(见各文件 TODO(TDD))。为保证容器可启动、探针可用,这里先起一个
-//! **引导路由**(`/api/status`、`/healthz`、`/readyz`),其余路径返回 501;
-//! 待四路由面与 Repository 实现补齐后,改为 `router::build(state)` 即可。
+//! 已落地端点:状态、首装、登录、登出、本人信息;其余路径返回 501。
+//! 四路由面与其余 Repository 实现补齐后,改为 `router::build(state)`。
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use clap::Parser;
-use sea_weir_repository::DbPools;
+
+use sea_weir_repository::pg::{PgOptionRepository, PgUserRepository};
+use sea_weir_repository::{DbPools, OptionRepository, RepositoryContext, UserRepository};
+use sea_weir_server::app_state::ServerState;
+use sea_weir_server::handlers;
 use sea_weir_server::response;
+use sea_weir_server::session::SessionSigner;
 use sea_weir_types::config::AppConfig;
 use sea_weir_types::dto::common::ApiResponse;
 
@@ -49,6 +52,7 @@ async fn main() -> anyhow::Result<()> {
 
     // 2. 配置加载
     let config = sea_weir_server::config::load(&cli.config).await?;
+    let port = config.server.port;
 
     // 3. tracing
     sea_weir_server::config::init_tracing(&config);
@@ -60,21 +64,23 @@ async fn main() -> anyhow::Result<()> {
     });
     tracing::info!(version = env!("CARGO_PKG_VERSION"), started, "sea-weir-server 启动");
 
-    // 4. 主库/日志库连接池(尽力而为:失败仅告警,不阻塞进程启动)
-    let db_ready = match connect_pools(&config).await {
-        Some(pools) => {
-            drop(pools); // 业务层接入前不持有连接,避免空闲连接被回收告警
-            true
-        }
-        None => false,
-    };
+    // 4. 主库/日志库连接池 + 已实现的 Repository(数据库不可用时降级启动)
+    let (users, options) = connect_repositories(&config).await;
 
-    // 5. Valkey 客户端 + pub/sub:TODO(TDD)。当前仅记录配置来源,避免误连。
+    // 5. Valkey 客户端 + pub/sub:TODO(TDD)。当前仅记录配置来源,未建立连接。
     tracing::info!(cache_url = %config.cache.url, "缓存配置已加载(Valkey 客户端待接入)");
 
     // 9. HTTP 服务
-    let app = bootstrap_router(db_ready, started);
-    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], config.server.port));
+    let state = Arc::new(ServerState {
+        sessions: SessionSigner::new(&config.session),
+        config,
+        users,
+        options,
+        started,
+    });
+
+    let app = build_router(state);
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "HTTP 监听中");
     axum::serve(listener, app)
@@ -85,64 +91,60 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 建立连接池并执行 migrations;不可用或未配置时返回 `None`(降级启动)。
-async fn connect_pools(config: &AppConfig) -> Option<DbPools> {
+/// 建立连接池并装配已实现的 Repository;不可用或未配置时返回 `(None, None)`。
+async fn connect_repositories(
+    config: &AppConfig,
+) -> (Option<Arc<dyn UserRepository>>, Option<Arc<dyn OptionRepository>>) {
     let dsn = config.database.dsn.trim();
     if dsn.is_empty() || dsn.contains("CHANGE_ME") {
         tracing::warn!("database.dsn 未配置(仍为占位值),跳过数据库连接");
-        return None;
+        return (None, None);
     }
 
-    match DbPools::connect(&config.database).await {
-        Ok(pools) => {
-            if let Err(e) = pools.migrate().await {
-                tracing::warn!(error = %e, "migrations 执行失败(继续启动)");
-            }
-            tracing::info!("数据库连接池就绪");
-            Some(pools)
-        }
+    let pools = match DbPools::connect(&config.database).await {
+        Ok(pools) => pools,
         Err(e) => {
             tracing::warn!(error = %e, "数据库不可用,以降级模式启动");
-            None
+            return (None, None);
         }
-    }
-}
-
-/// 引导路由。业务面(四路由面共 305 条端点)待 TDD 落地后由 `router::build` 取代。
-#[derive(Clone)]
-struct BootstrapState {
-    system_name: String,
-    started: u64,
-    db_ready: bool,
-}
-
-fn bootstrap_router(db_ready: bool, started: u64) -> Router {
-    let state = BootstrapState {
-        system_name: "sea-weir".to_string(),
-        started,
-        db_ready,
     };
 
+    if let Err(e) = pools.migrate().await {
+        tracing::warn!(error = %e, "migrations 执行失败(继续启动)");
+    }
+    tracing::info!("数据库连接池就绪");
+
+    let ctx = Arc::new(RepositoryContext {
+        pools,
+        cache: sea_weir_repository::pool::cache_client::CacheClient,
+    });
+    (
+        Some(Arc::new(PgUserRepository::new(ctx.clone()))),
+        Some(Arc::new(PgOptionRepository::new(ctx))),
+    )
+}
+
+/// 路由装配。已落地端点 + 健康探针;其余返回 501。
+fn build_router(state: Arc<ServerState>) -> Router {
     Router::new()
-        // 公开:全站状态(前端 status store 的唯一来源,契约见 CONTRACTS.md 附录 A.5)
-        .route("/api/status", get(status))
+        // 公开:全站状态 / 首装向导
+        .route("/api/status", get(handlers::system::status))
         .route("/api/uptime/status", get(uptime_status))
+        .route(
+            "/api/setup",
+            get(handlers::system::get_setup).post(handlers::system::post_setup),
+        )
+        // 认证
+        .route("/api/user/login", post(handlers::user::login))
+        .route("/api/user/logout", get(handlers::user::logout))
+        // 受保护:本人信息(UserAuth + New-Api-User 防串号)
+        .route("/api/user/self", get(handlers::user::self_info))
         // K8s 探针
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .fallback(not_implemented)
         .with_state(state)
-    // TODO(TDD): 合并 router::build(state) 的四个路由面
-}
-
-async fn status(State(s): State<BootstrapState>) -> Response {
-    response::ok(serde_json::json!({
-        "system_name": s.system_name,
-        "version": env!("CARGO_PKG_VERSION"),
-        "start_time": s.started,
-        "setup": false,
-        "db_ready": s.db_ready,
-    }))
+    // TODO(TDD): 合并 router::build(state) 的四路由面
 }
 
 async fn uptime_status() -> Response {
@@ -153,8 +155,8 @@ async fn healthz() -> &'static str {
     "ok"
 }
 
-async fn readyz(State(s): State<BootstrapState>) -> Response {
-    if s.db_ready {
+async fn readyz(State(state): State<Arc<ServerState>>) -> Response {
+    if state.db_ready() {
         (StatusCode::OK, "ready").into_response()
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, "database not ready").into_response()

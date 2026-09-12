@@ -25,6 +25,18 @@ pub trait UserRepository: Send + Sync {
 
     async fn update_status(&self, id: i64, status: i32) -> AppResult<()>;
     async fn soft_delete(&self, id: i64) -> AppResult<()>;
+
+    /// 创建用户(首装 root / 注册)。`password_hash` 为 bcrypt 哈希。
+    ///
+    /// - 调用方负责唯一性:username 冲突由唯一索引兜底,返回 `AppError::Database`。
+    /// - 后置:返回新用户 id。
+    async fn create(
+        &self,
+        username: &str,
+        password_hash: &str,
+        role: i32,
+        aff_code: &str,
+    ) -> AppResult<i64>;
 }
 
 #[cfg(test)]

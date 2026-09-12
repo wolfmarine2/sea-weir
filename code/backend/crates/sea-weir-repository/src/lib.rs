@@ -15,6 +15,7 @@
 #![forbid(unsafe_code)]
 
 pub mod cache;
+pub mod pg;
 pub mod pool;
 pub mod traits;
 

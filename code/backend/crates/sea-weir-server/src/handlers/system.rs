@@ -1,9 +1,113 @@
-//! `system` 域 handler。契约见 doc/architecture/CONTRACTS.md;端点清单见附录 A。
+//! `system` 域 handler:全站状态与首装向导(system-design §9.2、CONTRACTS §附录 A)。
+//!
+//! 现状:`/api/status`、`/api/setup` 已落地;`/api/status/test`、公告、OAuth 等待补。
 
-// TODO(TDD): 每个端点一个 async fn,签名形如
-//   async fn xxx(State(state), auth: AuthUser, Json(req)) -> Result<Response, AppErrorWrapper>
-//
-// handler 层测试要点(用 axum 的 oneshot,不起真实服务):
-//   - 参数校验失败返回业务错误而非 500
-//   - 响应字段名为 snake_case 且与 new-api 一致
-//   - 分页参数 p/page_size 解析正确(p 为 1 起)
+use std::sync::Arc;
+
+use axum::extract::State;
+use axum::response::Response;
+use axum::Json;
+use serde::Deserialize;
+
+use sea_weir_types::constants::role;
+use sea_weir_types::AppError;
+
+use crate::app_state::ServerState;
+use crate::response;
+
+/// `GET /api/status`(公开)。
+///
+/// 全站配置,前端 status store 的唯一来源。当前返回系统名/版本/首装状态等;
+/// OAuth、支付开关、导航可见性等待 options 表落地后补全。
+pub async fn status(State(state): State<Arc<ServerState>>) -> Response {
+    let mut system_name = "sea-weir".to_string();
+    let mut setup = false;
+
+    if let Some(options) = state.options.as_ref() {
+        if let Ok(Some(v)) = options.get("system_name").await {
+            if !v.trim().is_empty() {
+                system_name = v;
+            }
+        }
+        if let Ok(Some(v)) = options.get("setup").await {
+            setup = v == "true" || v == "1";
+        }
+    }
+    // 首装与否以「是否存在 root 账号」为准。
+    if let Some(users) = state.users.as_ref() {
+        if let Ok(Some(_)) = users.find_by_username("root").await {
+            setup = true;
+        }
+    }
+
+    response::ok(serde_json::json!({
+        "system_name": system_name,
+        "logo": "",
+        "version": env!("CARGO_PKG_VERSION"),
+        "start_time": state.started,
+        "setup": setup,
+        "db_ready": state.db_ready(),
+    }))
+}
+
+/// `GET /api/setup`(公开):是否已完成首装。
+pub async fn get_setup(State(state): State<Arc<ServerState>>) -> Response {
+    let root_init = match state.users.as_ref() {
+        Some(users) => users
+            .find_by_username("root")
+            .await
+            .map(|u| u.is_some())
+            .unwrap_or(false),
+        None => false,
+    };
+
+    response::ok(serde_json::json!({
+        "status": root_init,
+        "root_init": root_init,
+        "database_type": if state.db_ready() { "openGauss" } else { "" },
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetupRequest {
+    pub username: String,
+    pub password: String,
+}
+
+/// `POST /api/setup`(公开):未初始化时创建 root 并写初始化标记;已初始化拒绝。
+pub async fn post_setup(
+    State(state): State<Arc<ServerState>>,
+    Json(req): Json<SetupRequest>,
+) -> Response {
+    let users = match state.users.as_ref() {
+        Some(users) => users,
+        None => return response::err(AppError::Database("数据库未连接".into())),
+    };
+
+    match users.find_by_username("root").await {
+        Ok(Some(_)) => return response::err(AppError::Biz("系统已初始化".into())),
+        Ok(None) => {}
+        Err(e) => return response::err(e),
+    }
+
+    let username = req.username.trim();
+    if username.is_empty() {
+        return response::err(AppError::BadRequest("用户名不能为空".into()));
+    }
+    if req.password.len() < 6 {
+        return response::err(AppError::BadRequest("口令至少 6 位".into()));
+    }
+
+    let password_hash = match bcrypt::hash(&req.password, bcrypt::DEFAULT_COST) {
+        Ok(hash) => hash,
+        Err(e) => return response::err(AppError::Internal(format!("口令哈希失败: {e}"))),
+    };
+
+    let aff = uuid::Uuid::new_v4().simple().to_string();
+    let aff_code = &aff[..16];
+
+    match users.create(username, &password_hash, role::ROOT, aff_code).await {
+        Ok(id) => response::ok(serde_json::json!({ "id": id, "username": username })),
+        Err(e) => response::err(e),
+    }
+}

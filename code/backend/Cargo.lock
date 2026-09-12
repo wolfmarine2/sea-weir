@@ -2726,6 +2726,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "bcrypt",
  "bytes",
  "chrono",
  "clap",
