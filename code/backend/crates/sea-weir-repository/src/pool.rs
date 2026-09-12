@@ -1,6 +1,10 @@
 //! 连接池装配。主库与日志库物理分离(逻辑上可同库)。
 
-use sea_weir_types::AppResult;
+use std::time::Duration;
+
+use sea_weir_types::config::DatabaseConfig;
+use sea_weir_types::{AppError, AppResult};
+use sqlx::postgres::PgPoolOptions;
 
 /// 双连接池。日志表写入走独立 pool,避免日志洪峰挤占账务连接。
 pub struct DbPools {
@@ -10,13 +14,41 @@ pub struct DbPools {
 }
 
 impl DbPools {
-    pub async fn connect(_cfg: &sea_weir_types::config::DatabaseConfig) -> AppResult<Self> {
-        todo!("建立主库/日志库连接池;log_dsn 为空时复用主库")
+    /// 建立主库/日志库连接池。`log_dsn` 为空时日志库复用主库 pool。
+    pub async fn connect(cfg: &DatabaseConfig) -> AppResult<Self> {
+        let main = PgPoolOptions::new()
+            .max_connections(cfg.max_connections.max(1))
+            .acquire_timeout(Duration::from_secs(10))
+            .connect(&cfg.dsn)
+            .await
+            .map_err(|e| AppError::Database(format!("主库连接失败: {e}")))?;
+
+        let log = match cfg.log_dsn.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(dsn) => PgPoolOptions::new()
+                .max_connections(cfg.log_max_connections.max(1))
+                .acquire_timeout(Duration::from_secs(10))
+                .connect(dsn)
+                .await
+                .map_err(|e| AppError::Database(format!("日志库连接失败: {e}")))?,
+            None => {
+                tracing::info!("database.log_dsn 为空,日志库复用主库连接池");
+                main.clone()
+            }
+        };
+
+        Ok(Self { main, log })
     }
 
     /// 启动时执行 sqlx migrations。
+    ///
+    /// 现状:`migrations/` 目录目前只有 README,权威 DDL 在 `data/ddl.sql`
+    /// (由数据阶段脚本 `data/cicd.sh` 应用),尚无 `{timestamp}_*.sql` 迁移文件,
+    /// 故此处为 no-op。补齐迁移文件后改为 `sqlx::migrate!("../../migrations").run(&self.main)`。
     pub async fn migrate(&self) -> AppResult<()> {
-        todo!("运行 migrations/ 下的 DDL")
+        tracing::warn!(
+            "未执行 sqlx migrations:仓库暂无迁移文件,建表由 data 阶段脚本负责(data/cicd.sh)"
+        );
+        Ok(())
     }
 }
 
