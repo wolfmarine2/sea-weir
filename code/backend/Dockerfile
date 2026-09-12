@@ -43,6 +43,9 @@ RUN set -eux; \
 # 引入编译期 SQL 校验后,在此前增加 `COPY .sqlx /build/.sqlx` 并设置 SQLX_OFFLINE=true。
 COPY crates ./crates
 COPY migrations ./migrations
+# 配置模板:`sea-weir-server/src/config.rs` 用 include_str! 内嵌它做缺省兜底,
+# 编译期必须存在,否则报 "couldn't read .../config/config.example.yaml"。
+COPY config ./config
 
 # 刷新 mtime:占位源码先编译过,若 COPY 进来的源码时间戳更早,Cargo 会跳过重编译,
 # 导致镜像里是占位二进制。
