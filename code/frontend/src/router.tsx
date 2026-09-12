@@ -6,21 +6,42 @@
  *
  * 侧边导航的模块可见性由 status store(服务端 `/api/status`)驱动,
  * 不再像 new-api 那样从 localStorage 读取。
+ *
+ * 现状(骨架阶段):先注册「布局 + 首页 + 404」让应用能渲染,
+ * 其余页面域待 TDD 逐个补齐。
  */
-import { createBrowserRouter } from 'react-router-dom';
+import type { ReactNode } from 'react';
+import { Navigate, createBrowserRouter } from 'react-router-dom';
+import AppLayout from '@/layouts/AppLayout';
+import Home from '@/pages/public/Home';
+import NotFound from '@/pages/public/NotFound';
+import { useUserStore } from '@/stores/user';
 
 export const router = createBrowserRouter([
-  // TODO(TDD): 按上述分组注册。建议结构:
-  // { path: '/', element: <AppLayout/>, children: [ ...console, ...admin ] }
-  // { path: '/login', element: <AuthLayout/>, children: [ ...auth ] }
-  // { path: '*', element: <NotFound/> }
+  {
+    path: '/',
+    element: <AppLayout />,
+    children: [{ index: true, element: <Home /> }],
+  },
+  // TODO(TDD): 按上述分组继续注册
+  //   - 公开:/pricing、/about、/setup、/login、/register、/oauth/*
+  //   - 登录后:/console/*、/admin/*、/chat/*(用 <RequireRole> 包裹)
+  { path: '*', element: <NotFound /> },
 ]);
 
 /**
  * 权限守卫。role 不足时重定向到 /403,而非渲染空白。
  * 契约:role 语义 0 guest / 1 common / 10 admin / 100 root。
  */
-export function RequireRole(_props: { minRole: number; children: React.ReactNode }) {
-  // TODO(TDD): 从 userStore 读取 role;未登录跳 /login,角色不足跳 /403
-  return null;
+export function RequireRole({ minRole, children }: { minRole: number; children: ReactNode }) {
+  const isLoggedIn = useUserStore((s) => s.isLoggedIn);
+  const role = useUserStore((s) => s.role);
+
+  if (!isLoggedIn) {
+    return <Navigate to="/login" replace />;
+  }
+  if (role < minRole) {
+    return <Navigate to="/403" replace />;
+  }
+  return <>{children}</>;
 }

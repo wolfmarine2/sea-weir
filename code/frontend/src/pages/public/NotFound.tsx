@@ -1,5 +1,20 @@
 /** 404 兜底页。 */
+import { Button, Result } from 'antd';
+import { useNavigate } from 'react-router-dom';
+
 export default function NotFound() {
-  // TODO(TDD): 页面编排。数据取自 hooks/,渲染交给 components/。
-  return null;
+  const navigate = useNavigate();
+
+  return (
+    <Result
+      status="404"
+      title="404"
+      subTitle="页面不存在或尚未实现"
+      extra={
+        <Button type="primary" onClick={() => navigate('/')}>
+          返回首页
+        </Button>
+      }
+    />
+  );
 }
