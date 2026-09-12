@@ -1,5 +1,6 @@
 use async_trait::async_trait;
-use sea_weir_types::{domain::Token, AppResult};
+use sea_weir_types::domain::{NewToken, Token};
+use sea_weir_types::AppResult;
 
 #[cfg_attr(feature = "mock", mockall::automock)]
 #[async_trait]
@@ -12,6 +13,16 @@ pub trait TokenRepository: Send + Sync {
 
     async fn find_by_id(&self, id: i64) -> AppResult<Option<Token>>;
     async fn list_by_user(&self, user_id: i64, offset: i64, limit: i64) -> AppResult<Vec<Token>>;
+    async fn count_by_user(&self, user_id: i64) -> AppResult<i64>;
+    /// 本人范围内名称是否已存在(创建前置校验)。
+    async fn exists_by_name(&self, user_id: i64, name: &str) -> AppResult<bool>;
+
+    /// 创建令牌。后置:返回新令牌 id。
+    async fn create(&self, new: NewToken) -> AppResult<i64>;
+    /// 全量更新(按 id + user_id 守卫,防越权)。返回是否命中。
+    async fn update(&self, token: &Token) -> AppResult<bool>;
+    /// 软删除(按 id + user_id 守卫,防越权)。返回是否命中。
+    async fn soft_delete(&self, id: i64, user_id: i64) -> AppResult<bool>;
 
     /// 条件原子扣减,语义同 `UserRepository::try_decrease_quota`。
     /// `unlimited_quota` 为真时直接返回 true 且不写库。

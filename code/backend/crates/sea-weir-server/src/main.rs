@@ -21,12 +21,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use clap::Parser;
 
-use sea_weir_repository::pg::{PgOptionRepository, PgUserRepository};
-use sea_weir_repository::{DbPools, OptionRepository, RepositoryContext, UserRepository};
+use sea_weir_repository::pg::{PgOptionRepository, PgTokenRepository, PgUserRepository};
+use sea_weir_repository::{
+    DbPools, OptionRepository, RepositoryContext, TokenRepository, UserRepository,
+};
 use sea_weir_server::app_state::ServerState;
 use sea_weir_server::handlers;
 use sea_weir_server::response;
@@ -65,7 +67,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(version = env!("CARGO_PKG_VERSION"), started, "sea-weir-server 启动");
 
     // 4. 主库/日志库连接池 + 已实现的 Repository(数据库不可用时降级启动)
-    let (users, options) = connect_repositories(&config).await;
+    let (users, options, tokens) = connect_repositories(&config).await;
 
     // 5. Valkey 客户端 + pub/sub:TODO(TDD)。当前仅记录配置来源,未建立连接。
     tracing::info!(cache_url = %config.cache.url, "缓存配置已加载(Valkey 客户端待接入)");
@@ -76,6 +78,7 @@ async fn main() -> anyhow::Result<()> {
         config,
         users,
         options,
+        tokens,
         started,
     });
 
@@ -91,21 +94,25 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 建立连接池并装配已实现的 Repository;不可用或未配置时返回 `(None, None)`。
+/// 建立连接池并装配已实现的 Repository;不可用或未配置时返回 `(None, None, None)`。
 async fn connect_repositories(
     config: &AppConfig,
-) -> (Option<Arc<dyn UserRepository>>, Option<Arc<dyn OptionRepository>>) {
+) -> (
+    Option<Arc<dyn UserRepository>>,
+    Option<Arc<dyn OptionRepository>>,
+    Option<Arc<dyn TokenRepository>>,
+) {
     let dsn = config.database.dsn.trim();
     if dsn.is_empty() || dsn.contains("CHANGE_ME") {
         tracing::warn!("database.dsn 未配置(仍为占位值),跳过数据库连接");
-        return (None, None);
+        return (None, None, None);
     }
 
     let pools = match DbPools::connect(&config.database).await {
         Ok(pools) => pools,
         Err(e) => {
             tracing::warn!(error = %e, "数据库不可用,以降级模式启动");
-            return (None, None);
+            return (None, None, None);
         }
     };
 
@@ -120,7 +127,8 @@ async fn connect_repositories(
     });
     (
         Some(Arc::new(PgUserRepository::new(ctx.clone()))),
-        Some(Arc::new(PgOptionRepository::new(ctx))),
+        Some(Arc::new(PgOptionRepository::new(ctx.clone()))),
+        Some(Arc::new(PgTokenRepository::new(ctx))),
     )
 }
 
@@ -139,6 +147,17 @@ fn build_router(state: Arc<ServerState>) -> Router {
         .route("/api/user/logout", get(handlers::user::logout))
         // 受保护:本人信息(UserAuth + New-Api-User 防串号)
         .route("/api/user/self", get(handlers::user::self_info))
+        // 令牌管理(UserAuth)。契约:PUT 用 /api/token/(id 在 body),DELETE 用 /:id
+        .route(
+            "/api/token/",
+            get(handlers::token::list)
+                .post(handlers::token::create)
+                .put(handlers::token::update),
+        )
+        .route("/api/token", get(handlers::token::list).put(handlers::token::update))
+        .route("/api/token/search", get(handlers::token::list))
+        .route("/api/token/{id}", delete(handlers::token::delete))
+        .route("/api/token/{id}/key", post(handlers::token::reveal_key))
         // K8s 探针
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))

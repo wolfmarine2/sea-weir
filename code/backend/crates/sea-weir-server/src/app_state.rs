@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use sea_weir_repository::{OptionRepository, UserRepository};
+use sea_weir_repository::{OptionRepository, TokenRepository, UserRepository};
 use sea_weir_types::config::AppConfig;
 
 use crate::session::SessionSigner;
@@ -39,6 +39,7 @@ pub struct ServerState {
     pub sessions: SessionSigner,
     pub users: Option<Arc<dyn UserRepository>>,
     pub options: Option<Arc<dyn OptionRepository>>,
+    pub tokens: Option<Arc<dyn TokenRepository>>,
     /// 进程启动时刻(unix 秒)
     pub started: u64,
 }

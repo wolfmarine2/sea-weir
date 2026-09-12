@@ -18,5 +18,5 @@ pub use log::Log;
 pub use option::Option as SystemOption;
 pub use subscription::{SubscriptionPlan, UserSubscription};
 pub use task::Task;
-pub use token::Token;
+pub use token::{mask_token_key, NewToken, Token};
 pub use user::User;

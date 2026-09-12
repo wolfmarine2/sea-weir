@@ -12,6 +12,8 @@
 //! → `Sec-WebSocket-Protocol`(realtime)→ `mj-api-secret`(MJ)。
 //! `sk-xxx-{channelId}` 后缀指定渠道**仅 admin/root 可用**。
 
+use axum::extract::FromRequestParts;
+use sea_weir_types::constants::role;
 use sea_weir_types::{AppError, AppResult};
 
 use crate::app_state::ServerState;
@@ -89,9 +91,56 @@ impl axum::extract::FromRequestParts<std::sync::Arc<ServerState>> for AuthUser {
     }
 }
 
+/// 角色闸门失败文案(与 new-api 逐字一致)。
+const INSUFFICIENT_PRIVILEGES: &str = "Unauthorized, insufficient privileges";
+
+/// 角色校验:不足时返回 HTTP 200 + `success:false`(`AppError::Forbidden` 的映射)。
+fn ensure_role(user: &AuthUser, min_role: i32) -> Result<(), axum::response::Response> {
+    if user.role < min_role {
+        return Err(response::err(AppError::Forbidden(
+            INSUFFICIENT_PRIVILEGES.into(),
+        )));
+    }
+    Ok(())
+}
+
+/// AdminAuth(role ≥ 10)。
+///
+/// 契约:管理面角色不足返回 **HTTP 200 + `success:false`**(`AppError::Forbidden`
+/// 的 `admin_status()` 映射为 200),不是 403。
+pub struct AdminUser(pub AuthUser);
+
+impl FromRequestParts<std::sync::Arc<ServerState>> for AdminUser {
+    type Rejection = axum::response::Response;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &std::sync::Arc<ServerState>,
+    ) -> Result<Self, Self::Rejection> {
+        let user = AuthUser::from_request_parts(parts, state).await?;
+        ensure_role(&user, role::ADMIN)?;
+        Ok(AdminUser(user))
+    }
+}
+
+/// RootAuth(role ≥ 100)。失败同 [`AdminUser`],返回 200 + `success:false`。
+pub struct RootUser(pub AuthUser);
+
+impl FromRequestParts<std::sync::Arc<ServerState>> for RootUser {
+    type Rejection = axum::response::Response;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &std::sync::Arc<ServerState>,
+    ) -> Result<Self, Self::Rejection> {
+        let user = AuthUser::from_request_parts(parts, state).await?;
+        ensure_role(&user, role::ROOT)?;
+        Ok(RootUser(user))
+    }
+}
+
 /// 防串号:`New-Api-User` 必须存在且等于会话/令牌归属用户 id。
-fn require_new_api_user(
-    headers: &http::HeaderMap,
+fn require_new_api_user(    headers: &http::HeaderMap,
     expected: i64,
 ) -> Result<(), axum::response::Response> {
     let got = headers
@@ -170,5 +219,36 @@ mod tests {
     #[test]
     fn matching_new_api_user_passes() {
         assert!(require_new_api_user(&headers_with(Some("1")), 1).is_ok());
+    }
+
+    fn auth_user(role_value: i32) -> AuthUser {
+        AuthUser {
+            user_id: 1,
+            username: "u".into(),
+            role: role_value,
+            group: "default".into(),
+        }
+    }
+
+    #[test]
+    fn role_gate_rejects_insufficient_role() {
+        // common(1) 不能过 admin(10) 闸门
+        assert!(ensure_role(&auth_user(role::COMMON), role::ADMIN).is_err());
+        // admin(10) 不能过 root(100) 闸门
+        assert!(ensure_role(&auth_user(role::ADMIN), role::ROOT).is_err());
+    }
+
+    #[test]
+    fn role_gate_returns_http_200_not_403() {
+        // 契约:管理面角色不足是 HTTP 200 + success:false,不是 403。
+        let response = ensure_role(&auth_user(role::COMMON), role::ADMIN).expect_err("应被拒绝");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+    }
+
+    #[test]
+    fn role_gate_allows_sufficient_role() {
+        assert!(ensure_role(&auth_user(role::ADMIN), role::ADMIN).is_ok());
+        assert!(ensure_role(&auth_user(role::ROOT), role::ROOT).is_ok());
+        assert!(ensure_role(&auth_user(role::COMMON), role::COMMON).is_ok());
     }
 }

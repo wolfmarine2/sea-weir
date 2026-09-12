@@ -28,6 +28,25 @@ pub struct Token {
     pub cross_group_retry: bool,
 }
 
+/// 新建令牌的入参(id / 时间戳 / 已用量由仓库层生成)。
+#[derive(Debug, Clone)]
+pub struct NewToken {
+    pub user_id: i64,
+    /// 48 位随机串,`sk-` 前缀不入库。
+    pub key: String,
+    pub name: String,
+    /// -1 表示永不过期。
+    pub expired_time: i64,
+    pub remain_quota: i64,
+    pub unlimited_quota: bool,
+    pub model_limits_enabled: bool,
+    pub model_limits: String,
+    pub allow_ips: Option<String>,
+    /// 非空则覆盖用户分组。
+    pub group: String,
+    pub cross_group_retry: bool,
+}
+
 /// 令牌 key 脱敏。溯源:new-api `model/token.go` `MaskTokenKey`。
 ///
 /// 规则:len ≤ 4 全掩码;len ≤ 8 → `前2 + "****" + 后2`;否则 `前4 + "**********" + 后4`。
@@ -53,8 +72,55 @@ pub fn mask_token_key(key: &str) -> String {
 #[cfg(test)]
 mod tests {
     // TDD 入口(脱敏规则是契约,必须逐字节对齐):
-    // - [ ] mask_token_key("") == ""
-    // - [ ] len<=4 全掩码;len<=8 走 前2+****+后2;len>8 走 前4+**********+后4
-    // - [ ] expired_time == -1 视为永不过期
-    // - [ ] 序列化不含 key 明文
+    // - [x] mask_token_key("") == ""
+    // - [x] len<=4 全掩码;len<=8 走 前2+****+后2;len>8 走 前4+**********+后4
+    // - [ ] expired_time == -1 视为永不过期(校验逻辑待 relayer 落地)
+    // - [x] 序列化不含 key 明文
+    use super::*;
+
+    #[test]
+    fn mask_empty_is_empty() {
+        assert_eq!(mask_token_key(""), "");
+    }
+
+    #[test]
+    fn mask_short_is_all_stars() {
+        assert_eq!(mask_token_key("abc"), "***");
+        assert_eq!(mask_token_key("abcd"), "****");
+    }
+
+    #[test]
+    fn mask_medium_is_head2_tail2() {
+        assert_eq!(mask_token_key("abcdefgh"), "ab****gh");
+    }
+
+    #[test]
+    fn mask_long_is_head4_tail4() {
+        let key = "SFEwABCDEFGHIJKLMNOPQRSTUVWXYZbYt7";
+        assert_eq!(mask_token_key(key), "SFEw**********bYt7");
+    }
+
+    #[test]
+    fn serialized_token_hides_key() {
+        let token = Token {
+            id: 1,
+            user_id: 1,
+            key: "supersecret".into(),
+            status: 1,
+            name: "n".into(),
+            created_time: 0,
+            accessed_time: 0,
+            expired_time: -1,
+            remain_quota: 0,
+            unlimited_quota: false,
+            model_limits_enabled: false,
+            model_limits: String::new(),
+            allow_ips: None,
+            used_quota: 0,
+            group: String::new(),
+            cross_group_retry: false,
+        };
+        let json = serde_json::to_value(&token).expect("可序列化");
+        assert!(json.get("key").is_none(), "key 明文不得出现在响应中");
+    }
 }
