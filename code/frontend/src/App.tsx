@@ -6,7 +6,7 @@
  * 注意(ADR-009):路由守卫**仅为体验层**。真正的权限以服务端逐端点鉴权为准,
  * 前端守卫的作用是避免用户进入注定 403 的页面,不承担安全职责。
  */
-import { ConfigProvider, theme as antdTheme } from 'antd';
+import { App as AntApp, ConfigProvider, theme as antdTheme } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import { RouterProvider } from 'react-router-dom';
 import { router } from './router';
@@ -22,7 +22,10 @@ export default function App() {
         algorithm: mode === 'dark' ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
       }}
     >
-      <RouterProvider router={router} />
+      {/* antd App:为 message / modal 提供 context(避免静态方法丢失主题与 locale) */}
+      <AntApp>
+        <RouterProvider router={router} />
+      </AntApp>
     </ConfigProvider>
   );
 }

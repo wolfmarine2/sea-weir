@@ -15,6 +15,7 @@ import { Navigate, createBrowserRouter } from 'react-router-dom';
 import AppLayout from '@/layouts/AppLayout';
 import AuthLayout from '@/layouts/AuthLayout';
 import Login from '@/pages/auth/Login';
+import TokenPage from '@/pages/console/TokenPage';
 import Home from '@/pages/public/Home';
 import NotFound from '@/pages/public/NotFound';
 import Setup from '@/pages/setup/Setup';
@@ -24,7 +25,17 @@ export const router = createBrowserRouter([
   {
     path: '/',
     element: <AppLayout />,
-    children: [{ index: true, element: <Home /> }],
+    children: [
+      { index: true, element: <Home /> },
+      {
+        path: 'console/token',
+        element: (
+          <RequireRole minRole={1}>
+            <TokenPage />
+          </RequireRole>
+        ),
+      },
+    ],
   },
   {
     // 认证类页面共用无侧边栏布局

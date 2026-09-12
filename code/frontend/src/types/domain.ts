@@ -58,3 +58,28 @@ export interface SetupInfo {
   root_init: boolean;
   database_type: string;
 }
+
+/**
+ * 令牌(API key)。与后端 `sea_weir_types::domain::Token` 一致。
+ * 列表/创建响应中的 `key` 已脱敏,仅 `POST /api/token/:id/key` 返回明文。
+ */
+export interface TokenItem {
+  id: number;
+  user_id: number;
+  key: string;
+  /** 1 启用 / 2 禁用 / 3 过期 / 4 额度耗尽 */
+  status: number;
+  name: string;
+  created_time: number;
+  accessed_time: number;
+  /** -1 表示永不过期 */
+  expired_time: number;
+  remain_quota: number;
+  unlimited_quota: boolean;
+  model_limits_enabled: boolean;
+  model_limits: string;
+  allow_ips: string | null;
+  used_quota: number;
+  group: string;
+  cross_group_retry: boolean;
+}
