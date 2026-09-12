@@ -15,3 +15,46 @@ export const QUOTA_PER_UNIT = 500_000;
 export const LOG_TYPE = {
   UNKNOWN: 0, TOPUP: 1, CONSUME: 2, MANAGE: 3, SYSTEM: 4, ERROR: 5, REFUND: 6,
 } as const;
+
+/**
+ * 用户。与后端 `sea_weir_types::domain::User` 一致。
+ * `password` 永不下发(后端 `#[serde(skip_serializing)]`)。
+ */
+export interface User {
+  id: number;
+  username: string;
+  display_name: string;
+  /** 0 guest / 1 common / 10 admin / 100 root */
+  role: number;
+  /** 1 启用 / 2 禁用 */
+  status: number;
+  email: string;
+  quota: number;
+  used_quota: number;
+  request_count: number;
+  group: string;
+  aff_code: string;
+  setting: Record<string, unknown>;
+  created_at: number;
+  last_login_at: number;
+}
+
+/** `GET /api/status` 载荷。前端 status store 的唯一来源。 */
+export interface SystemStatus {
+  system_name: string;
+  logo: string;
+  version: string;
+  start_time: number;
+  setup: boolean;
+  db_ready: boolean;
+  [key: string]: unknown;
+}
+
+/** `GET /api/setup` 载荷。 */
+export interface SetupInfo {
+  /** 是否已完成初始化 */
+  status: boolean;
+  /** root 账号是否已存在 */
+  root_init: boolean;
+  database_type: string;
+}

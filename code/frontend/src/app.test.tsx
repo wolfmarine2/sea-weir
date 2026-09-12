@@ -32,6 +32,6 @@ describe('app shell', () => {
     // 顶栏系统名(布局已挂载)
     expect(await screen.findByRole('heading', { name: 'sea-weir' })).toBeInTheDocument();
     // 首页内容(路由命中 index 路由)
-    expect(await screen.findByText('骨架阶段')).toBeInTheDocument();
+    expect(await screen.findByText('系统名称')).toBeInTheDocument();
   });
 });

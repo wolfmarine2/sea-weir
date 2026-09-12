@@ -7,14 +7,17 @@
  * 侧边导航的模块可见性由 status store(服务端 `/api/status`)驱动,
  * 不再像 new-api 那样从 localStorage 读取。
  *
- * 现状(骨架阶段):先注册「布局 + 首页 + 404」让应用能渲染,
+ * 现状(骨架阶段):已注册「布局 + 首页 + 首装 + 登录 + 404」,
  * 其余页面域待 TDD 逐个补齐。
  */
 import type { ReactNode } from 'react';
 import { Navigate, createBrowserRouter } from 'react-router-dom';
 import AppLayout from '@/layouts/AppLayout';
+import AuthLayout from '@/layouts/AuthLayout';
+import Login from '@/pages/auth/Login';
 import Home from '@/pages/public/Home';
 import NotFound from '@/pages/public/NotFound';
+import Setup from '@/pages/setup/Setup';
 import { useUserStore } from '@/stores/user';
 
 export const router = createBrowserRouter([
@@ -23,8 +26,16 @@ export const router = createBrowserRouter([
     element: <AppLayout />,
     children: [{ index: true, element: <Home /> }],
   },
-  // TODO(TDD): 按上述分组继续注册
-  //   - 公开:/pricing、/about、/setup、/login、/register、/oauth/*
+  {
+    // 认证类页面共用无侧边栏布局
+    element: <AuthLayout />,
+    children: [
+      { path: '/setup', element: <Setup /> },
+      { path: '/login', element: <Login /> },
+    ],
+  },
+  // TODO(TDD): 继续注册
+  //   - 公开:/pricing、/about、/register、/oauth/*
   //   - 登录后:/console/*、/admin/*、/chat/*(用 <RequireRole> 包裹)
   { path: '*', element: <NotFound /> },
 ]);

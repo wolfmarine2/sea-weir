@@ -14,6 +14,8 @@ import { useUserStore } from '@/stores/user';
 export const client = axios.create({
   baseURL: import.meta.env.VITE_API_BASE ?? '/',
   timeout: 30_000,
+  // 会话走 Set-Cookie;同源反代下本已携带,显式开启以兼容独立域部署。
+  withCredentials: true,
 });
 
 /**
