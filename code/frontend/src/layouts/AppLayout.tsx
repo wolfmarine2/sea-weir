@@ -30,6 +30,7 @@ export default function AppLayout() {
   const nav = [
     { key: '/', label: <Link to="/">首页</Link> },
     { key: '/console/token', label: <Link to="/console/token">令牌</Link> },
+    { key: '/console/log', label: <Link to="/console/log">日志</Link> },
     ...(role >= ROLE.ADMIN
       ? [{ key: '/admin/channel', label: <Link to="/admin/channel">渠道</Link> }]
       : []),

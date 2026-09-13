@@ -127,3 +127,26 @@ export interface ChannelPayload {
   test_model?: string | undefined;
   tag?: string | undefined;
 }
+
+/** 消费日志。与后端 `sea_weir_types::domain::Log` 一致。 */
+export interface LogItem {
+  id: number;
+  user_id: number;
+  created_at: number;
+  /** 0 未知 / 1 充值 / 2 消费 / 3 管理 / 4 系统 / 5 错误 / 6 退款 */
+  type: number;
+  content: string;
+  username: string;
+  token_name: string;
+  model_name: string;
+  quota: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  use_time: number;
+  is_stream: boolean;
+  channel_id: number | null;
+  token_id: number | null;
+  group: string | null;
+  ip: string | null;
+  request_id: string | null;
+}

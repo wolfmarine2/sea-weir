@@ -16,6 +16,7 @@ import AppLayout from '@/layouts/AppLayout';
 import AuthLayout from '@/layouts/AuthLayout';
 import ChannelPage from '@/pages/admin/ChannelPage';
 import Login from '@/pages/auth/Login';
+import LogPage from '@/pages/console/LogPage';
 import TokenPage from '@/pages/console/TokenPage';
 import Home from '@/pages/public/Home';
 import NotFound from '@/pages/public/NotFound';
@@ -33,6 +34,14 @@ export const router = createBrowserRouter([
         element: (
           <RequireRole minRole={1}>
             <TokenPage />
+          </RequireRole>
+        ),
+      },
+      {
+        path: 'console/log',
+        element: (
+          <RequireRole minRole={1}>
+            <LogPage />
           </RequireRole>
         ),
       },
