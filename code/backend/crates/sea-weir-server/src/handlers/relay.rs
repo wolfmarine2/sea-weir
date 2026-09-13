@@ -514,3 +514,49 @@ async fn log_consume(
         tracing::warn!(error = %e, request_id, "写消费日志失败");
     }
 }
+
+/// `GET /v1/models`(TokenAuth):令牌分组下可用的模型列表,OpenAI 原生格式。
+pub async fn list_models(
+    State(state): State<Arc<ServerState>>,
+    TokenAuth(auth): TokenAuth,
+) -> Response {
+    let Some(channels) = state.channels.as_ref() else {
+        return relay_fail(AppError::Database("数据库未连接".into()), RelayFormat::OpenAi);
+    };
+    match channels.list_models_by_group(&auth.group).await {
+        Ok(models) => {
+            let data: Vec<serde_json::Value> = models
+                .iter()
+                .map(|m| {
+                    serde_json::json!({"id": m, "object": "model", "owned_by": "sea-weir"})
+                })
+                .collect();
+            (StatusCode::OK, Json(serde_json::json!({"object": "list", "data": data})))
+                .into_response()
+        }
+        Err(e) => relay_fail(e, RelayFormat::OpenAi),
+    }
+}
+
+/// `GET /v1/models/:model`(TokenAuth):单个模型信息;分组下不可用则 404。
+pub async fn get_model(
+    State(state): State<Arc<ServerState>>,
+    TokenAuth(auth): TokenAuth,
+    axum::extract::Path(model): axum::extract::Path<String>,
+) -> Response {
+    let Some(channels) = state.channels.as_ref() else {
+        return relay_fail(AppError::Database("数据库未连接".into()), RelayFormat::OpenAi);
+    };
+    match channels.list_models_by_group(&auth.group).await {
+        Ok(models) if models.iter().any(|m| m == &model) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"id": model, "object": "model", "owned_by": "sea-weir"})),
+        )
+            .into_response(),
+        Ok(_) => crate::response::relay_err(
+            NewApiError::from(AppError::NotFound(format!("模型 {model} 不可用"))),
+            RelayFormat::OpenAi,
+        ),
+        Err(e) => relay_fail(e, RelayFormat::OpenAi),
+    }
+}

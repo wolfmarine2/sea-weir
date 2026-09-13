@@ -221,6 +221,8 @@ fn build_router(state: Arc<ServerState>) -> Router {
             post(handlers::relay::chat_completions),
         )
         .route("/v1/messages", post(handlers::relay::claude_messages))
+        .route("/v1/models", get(handlers::relay::list_models))
+        .route("/v1/models/{model}", get(handlers::relay::get_model))
         // K8s 探针
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))

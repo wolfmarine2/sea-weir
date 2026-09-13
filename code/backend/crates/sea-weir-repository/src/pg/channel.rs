@@ -183,6 +183,18 @@ impl crate::traits::ChannelRepository for PgChannelRepository {
         Ok(rows.into_iter().map(ChannelRow::into_domain).collect())
     }
 
+    async fn list_models_by_group(&self, group: &str) -> AppResult<Vec<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT DISTINCT model FROM abilities WHERE \"group\" = $1 AND enabled = TRUE \
+             ORDER BY model",
+        )
+        .bind(group)
+        .fetch_all(self.pool())
+        .await
+        .map_err(db_err)?;
+        Ok(rows.into_iter().map(|(m,)| m).collect())
+    }
+
     async fn create(&self, channel: &Channel) -> AppResult<i64> {
         let now = chrono::Utc::now().timestamp();
         let (id,): (i64,) = sqlx::query_as(

@@ -17,6 +17,9 @@ pub trait ChannelRepository: Send + Sync {
     /// 中继选路:按 (group, model) 取启用中的候选渠道(join abilities,按 priority 降序)。
     async fn list_candidates(&self, group: &str, model: &str) -> AppResult<Vec<Channel>>;
 
+    /// 某分组下可用的模型名(去重,来自启用中的 abilities)。
+    async fn list_models_by_group(&self, group: &str) -> AppResult<Vec<String>>;
+
     async fn create(&self, channel: &Channel) -> AppResult<i64>;
     async fn update(&self, channel: &Channel) -> AppResult<()>;
     async fn delete(&self, id: i64) -> AppResult<()>;
