@@ -368,22 +368,59 @@ pub async fn update_balance_all(
     response::ok(serde_json::json!({ "results": results }))
 }
 
-/// 按渠道类型探测余额。未知类型按 OpenAI 兼容尝试。
+/// 按渠道类型探测余额。
+///
+/// 优先级:渠道 `setting.balance` 自定义配置 > 类型内置默认(国内平台为主)。
+/// 未内置的类型返回业务错误并提示如何配置。
 async fn refresh_balance(state: &ServerState, channel: &Channel) -> Result<f64, Response> {
+    if let Some((path, field)) = balance_spec(channel.setting.as_ref()) {
+        return query_balance(state, channel, &path, field.as_deref(), None).await;
+    }
     match ApiType::from_channel_type(channel.r#type).unwrap_or(ApiType::OpenAi) {
-        ApiType::OpenAi => query_openai_balance(state, channel).await,
+        // OpenAI 兼容:额度上限 / 已用额度之差。
+        ApiType::OpenAi => {
+            query_balance(state, channel, "/dashboard/billing/subscription", None, Some("openai")).await
+        }
+        // 国内平台内置默认(字段名依据各自公开 HTTP API;如与线上不符可在 setting.balance 覆盖)。
+        ApiType::DeepSeek => {
+            query_balance(state, channel, "/user/balance", Some("/balance_infos/0/total_balance"), None).await
+        }
+        ApiType::Moonshot => {
+            query_balance(state, channel, "/v1/users/me/balance", Some("/data/available_balance"), None).await
+        }
+        ApiType::SiliconFlow => {
+            query_balance(state, channel, "/v1/user/info", Some("/data/totalBalance"), None).await
+        }
         other => Err(response::err(AppError::Biz(format!(
-            "渠道类型 {other:?} 暂不支持余额探测"
+            "渠道类型 {other:?} 未内置余额查询;可在渠道 setting 配置 balance: {{\"path\":\"...\",\"field\":\"/data/balance\"}}"
         )))),
     }
 }
 
-/// OpenAI 兼容平台:`GET {base}/dashboard/billing/subscription`。
-///
-/// 优先取 `total_granted - total_used`(剩余额度);否则取 `hard_limit_usd`(额度上限)。
-async fn query_openai_balance(state: &ServerState, channel: &Channel) -> Result<f64, Response> {
+/// 从渠道 `setting` 读取自定义余额配置:`{"balance": {"path": "...", "field": "/a/b"}}`。
+fn balance_spec(setting: Option<&serde_json::Value>) -> Option<(String, Option<String>)> {
+    let balance = setting?.get("balance")?;
+    let path = balance.get("path")?.as_str()?.trim().to_string();
+    if path.is_empty() {
+        return None;
+    }
+    let field = balance
+        .get("field")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    Some((path, field))
+}
+
+/// 通用余额查询:GET `base_url + path`,按 `field`(JSON Pointer)或常见字段名提取数值。
+async fn query_balance(
+    state: &ServerState,
+    channel: &Channel,
+    path: &str,
+    field: Option<&str>,
+    preset: Option<&str>,
+) -> Result<f64, Response> {
     let base = match channel.base_url.as_deref().filter(|s| !s.trim().is_empty()) {
-        Some(b) => b.trim_end_matches("/v1").trim_end_matches('/'),
+        Some(b) => b.trim_end_matches('/'),
         None => return Err(response::err(AppError::BadRequest("渠道未配置 base_url".into()))),
     };
     let key = channel
@@ -395,7 +432,13 @@ async fn query_openai_balance(state: &ServerState, channel: &Channel) -> Result<
         return Err(response::err(AppError::BadRequest("渠道未配置密钥".into())));
     };
 
-    let url = format!("{base}/dashboard/billing/subscription");
+    // base_url 以 /v1 结尾且 path 也以 /v1 开头时避免重复。
+    let url = if base.ends_with("/v1") && path.starts_with("/v1") {
+        format!("{base}{}", &path[3..])
+    } else {
+        format!("{base}{path}")
+    };
+
     let resp = state
         .http
         .get(&url)
@@ -415,16 +458,116 @@ async fn query_openai_balance(state: &ServerState, channel: &Channel) -> Result<
         .json()
         .await
         .map_err(|e| response::err(AppError::Upstream(format!("解析余额响应失败: {e}"))))?;
-    parse_balance(&body)
+
+    extract_balance(&body, field, preset)
         .map_err(|e| response::err(AppError::Upstream(format!("无法解析余额: {e}"))))
 }
 
-fn parse_balance(body: &serde_json::Value) -> Result<f64, String> {
-    let num = |key: &str| body.get(key).and_then(|v| v.as_f64());
-    match (num("total_granted"), num("total_used")) {
-        (Some(granted), Some(used)) => Ok(granted - used),
-        _ => num("hard_limit_usd").ok_or_else(|| {
-            "响应中无 total_granted/total_used/hard_limit_usd 字段".to_string()
-        }),
+/// 提取余额数值。支持 JSON Pointer 指定路径,或按常见字段名查找。
+fn extract_balance(
+    body: &serde_json::Value,
+    field: Option<&str>,
+    preset: Option<&str>,
+) -> Result<f64, String> {
+    if preset == Some("openai") {
+        let num = |key: &str| body.get(key).and_then(as_f64_value);
+        return match (num("total_granted"), num("total_used")) {
+            (Some(granted), Some(used)) => Ok(granted - used),
+            _ => num("hard_limit_usd").ok_or_else(|| {
+                "响应中无 total_granted/total_used/hard_limit_usd 字段".to_string()
+            }),
+        };
+    }
+
+    if let Some(pointer) = field {
+        let value = body
+            .pointer(pointer)
+            .ok_or_else(|| format!("响应中找不到字段 {pointer}"))?;
+        return as_f64_value(value).ok_or_else(|| format!("字段 {pointer} 不是数值"));
+    }
+
+    // 常见字段名(含嵌套一层 data)。
+    const KEYS: &[&str] = &[
+        "total_balance",
+        "available_balance",
+        "totalBalance",
+        "balance",
+        "remain",
+    ];
+    if let Some(v) = KEYS.iter().find_map(|k| body.get(*k)) {
+        if let Some(amount) = as_f64_value(v) {
+            return Ok(amount);
+        }
+    }
+    if let Some(data) = body.get("data") {
+        if let Some(v) = KEYS.iter().find_map(|k| data.get(*k)) {
+            if let Some(amount) = as_f64_value(v) {
+                return Ok(amount);
+            }
+        }
+    }
+    Err("响应中未找到常见余额字段,请在渠道 setting.balance 指定 field".into())
+}
+
+/// 数值或数字字符串 → f64。
+fn as_f64_value(value: &serde_json::Value) -> Option<f64> {
+    match value {
+        serde_json::Value::Number(n) => n.as_f64(),
+        serde_json::Value::String(s) => s.trim().parse().ok(),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn deepseek_balance_by_pointer() {
+        let body = json!({
+            "is_available": true,
+            "balance_infos": [{"currency": "CNY", "total_balance": "128.50", "granted_balance": "0.00"}]
+        });
+        let amount = extract_balance(&body, Some("/balance_infos/0/total_balance"), None).unwrap();
+        assert!((amount - 128.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn moonshot_balance_numeric_string() {
+        let body = json!({"code": 0, "status": true, "data": {"available_balance": 42.75}});
+        assert_eq!(
+            extract_balance(&body, Some("/data/available_balance"), None).unwrap(),
+            42.75
+        );
+    }
+
+    #[test]
+    fn common_field_fallback() {
+        let body = json!({"data": {"balance": "9.99"}});
+        assert_eq!(extract_balance(&body, None, None).unwrap(), 9.99);
+    }
+
+    #[test]
+    fn openai_preset_subtracts_used() {
+        let body = json!({"total_granted": 100.0, "total_used": 40.0, "hard_limit_usd": 120.0});
+        assert_eq!(extract_balance(&body, None, Some("openai")).unwrap(), 60.0);
+    }
+
+    #[test]
+    fn missing_field_reports_error() {
+        let body = json!({"foo": 1});
+        assert!(extract_balance(&body, Some("/nope"), None).is_err());
+    }
+
+    #[test]
+    fn balance_spec_from_setting() {
+        let setting = json!({"balance": {"path": "/x", "field": "/a/b"}});
+        assert_eq!(
+            balance_spec(Some(&setting)),
+            Some(("/x".to_string(), Some("/a/b".to_string())))
+        );
+        assert_eq!(balance_spec(Some(&json!({}))), None);
+        assert_eq!(balance_spec(None), None);
     }
 }
