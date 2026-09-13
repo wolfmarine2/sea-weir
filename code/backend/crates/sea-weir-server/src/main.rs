@@ -195,6 +195,11 @@ fn build_router(state: Arc<ServerState>) -> Router {
             "/api/channel/{id}",
             get(handlers::channel::get).delete(handlers::channel::delete),
         )
+        // 消费日志
+        .route("/api/log/self", get(handlers::log::self_logs))
+        .route("/api/log/", get(handlers::log::all_logs))
+        .route("/api/log", get(handlers::log::all_logs))
+        .route("/api/log/search", get(handlers::log::all_logs))
         // 中继面(TokenAuth / sk-token)
         .route(
             "/v1/chat/completions",

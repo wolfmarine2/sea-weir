@@ -259,15 +259,14 @@ pub async fn chat_completions(
         let url = upstream_url(base_url, "/v1/chat/completions");
         match forward_once(&state.http, &url, &channel_key, &body, is_stream).await {
             Ok(UpstreamOutcome::Stream(resp)) => {
-                let stream = resp.bytes_stream().map(|chunk| {
-                    chunk.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-                });
-                return Response::builder()
-                    .status(StatusCode::OK)
-                    .header(header::CONTENT_TYPE, "text/event-stream")
-                    .header(header::CACHE_CONTROL, "no-cache")
-                    .body(Body::from_stream(stream))
-                    .unwrap_or_else(|_| relay_fail(AppError::Internal("构造流式响应失败".into())));
+                return stream_response(
+                    state.clone(),
+                    auth.clone(),
+                    channel.id,
+                    origin_model.clone(),
+                    request_id.clone(),
+                    resp,
+                );
             }
             Ok(UpstreamOutcome::Json(upstream_body)) => {
                 let usage = usage_from_body(&upstream_body);
@@ -279,7 +278,7 @@ pub async fn chat_completions(
                 log_consume(
                     &state,
                     &auth,
-                    &channel,
+                    channel.id,
                     &origin_model,
                     &usage,
                     quota,
@@ -319,6 +318,96 @@ pub async fn chat_completions(
         last_err.unwrap_or_else(|| NewApiError::from(AppError::NotFound("无可用渠道".into()))),
         RelayFormat::OpenAi,
     )
+}
+
+/// 流式响应:透传 SSE 字节,同时扫描 `usage`;流结束后扣费 + 记消费日志。
+///
+/// 客户端中途断开时已消费部分仍结算(与 SEQ-004 一致)。
+fn stream_response(
+    state: Arc<ServerState>,
+    auth: crate::middleware::auth::AuthToken,
+    channel_id: i64,
+    model: String,
+    request_id: String,
+    resp: reqwest::Response,
+) -> Response {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(16);
+    let started = Instant::now();
+
+    tokio::spawn(async move {
+        let mut usage = Usage::default();
+        let mut line_buf = String::new();
+        let mut stream = resp.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            match chunk {
+                Ok(bytes) => {
+                    scan_sse_usage(&mut line_buf, &bytes, &mut usage);
+                    if tx.send(Ok(bytes)).await.is_err() {
+                        break; // 客户端断开
+                    }
+                }
+                Err(e) => {
+                    let _ = tx
+                        .send(Err(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            e.to_string(),
+                        )))
+                        .await;
+                    break;
+                }
+            }
+        }
+        let quota = billing::calculate_quota(&usage, &default_price());
+        if let Err(e) = charge(&state, &auth, quota).await {
+            tracing::warn!(error = %e, request_id, "流式扣费失败");
+            return;
+        }
+        log_consume(
+            &state,
+            &auth,
+            channel_id,
+            &model,
+            &usage,
+            quota,
+            started.elapsed().as_secs() as i32,
+            true,
+            &request_id,
+        )
+        .await;
+    });
+
+    let body_stream = futures_util::stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|item| (item, rx))
+    });
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(Body::from_stream(body_stream))
+        .unwrap_or_else(|_| relay_fail(AppError::Internal("构造流式响应失败".into())))
+}
+
+/// 从 SSE 字节里扫描 `usage`(OpenAI 流式在 `stream_options.include_usage` 下
+/// 于末尾 chunk 带 `usage` 字段;无 usage 则不计费)。
+fn scan_sse_usage(line_buf: &mut String, chunk: &[u8], usage: &mut Usage) {
+    line_buf.push_str(&String::from_utf8_lossy(chunk));
+    while let Some(pos) = line_buf.find('\n') {
+        let line = line_buf[..pos].to_string();
+        line_buf.drain(..=pos);
+        let line = line.trim();
+        let Some(payload) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let payload = payload.trim();
+        if payload.is_empty() || payload == "[DONE]" {
+            continue;
+        }
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(payload) {
+            if value.get("usage").map(|u| !u.is_null()).unwrap_or(false) {
+                *usage = usage_from_body(&value);
+            }
+        }
+    }
 }
 
 fn channel_err(code: &str, message: &str, status_code: u16) -> NewApiError {
@@ -368,7 +457,7 @@ async fn charge(
 async fn log_consume(
     state: &ServerState,
     auth: &crate::middleware::auth::AuthToken,
-    channel: &Channel,
+    channel_id: i64,
     model: &str,
     usage: &Usage,
     quota: i64,
@@ -393,7 +482,7 @@ async fn log_consume(
         completion_tokens: usage.completion_tokens,
         use_time,
         is_stream,
-        channel_id: Some(channel.id),
+        channel_id: Some(channel_id),
         token_id: Some(auth.token_id),
         group: Some(auth.group.clone()),
         ip: None,
