@@ -20,6 +20,7 @@ import {
   Typography,
 } from 'antd';
 import type { TableColumnsType } from 'antd';
+import dayjs from 'dayjs';
 
 import { api } from '@/api';
 import { DataTable } from '@/components/table';
@@ -111,6 +112,27 @@ export default function ChannelPage() {
     }
   };
 
+  const onRefreshBalance = async (record: ChannelItem) => {
+    try {
+      const { balance } = await api.channel.updateBalance(record.id);
+      message.success(`余额已刷新:$${balance.toFixed(2)}`);
+      table.refresh();
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : '余额刷新失败');
+    }
+  };
+
+  const onRefreshAll = async () => {
+    try {
+      const { results } = await api.channel.updateAllBalances();
+      const ok = results.filter((r) => r.error === undefined).length;
+      message.success(`已刷新 ${ok}/${results.length} 个渠道余额`);
+      table.refresh();
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : '余额刷新失败');
+    }
+  };
+
   const columns: TableColumnsType<ChannelItem> = [
     { title: 'ID', dataIndex: 'id', width: 70 },
     { title: '名称', dataIndex: 'name' },
@@ -134,12 +156,31 @@ export default function ChannelPage() {
     { title: '优先级', dataIndex: 'priority', width: 80 },
     { title: '权重', dataIndex: 'weight', width: 80 },
     {
+      title: '余额(USD)',
+      dataIndex: 'balance',
+      width: 120,
+      render: (value: number, record) => (
+        <Typography.Text>
+          ${value.toFixed(2)}
+          {record.balance_updated_time > 0 && (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {' '}
+              ({dayjs.unix(record.balance_updated_time as number).format('MM-DD HH:mm')})
+            </Typography.Text>
+          )}
+        </Typography.Text>
+      ),
+    },
+    {
       title: '操作',
       key: 'actions',
       render: (_value, record) => (
         <Space>
           <Button size="small" onClick={() => void onToggle(record)}>
             {record.status === 1 ? '禁用' : '启用'}
+          </Button>
+          <Button size="small" onClick={() => void onRefreshBalance(record)}>
+            刷新余额
           </Button>
           <Popconfirm title="确认删除该渠道?" onConfirm={() => void onDelete(record.id)}>
             <Button size="small" danger>
@@ -155,9 +196,12 @@ export default function ChannelPage() {
     <Card
       title="渠道"
       extra={
-        <Button type="primary" onClick={() => setModalOpen(true)}>
-          创建渠道
-        </Button>
+        <Space>
+          <Button onClick={() => void onRefreshAll()}>刷新全部余额</Button>
+          <Button type="primary" onClick={() => setModalOpen(true)}>
+            创建渠道
+          </Button>
+        </Space>
       }
     >
       <DataTable<ChannelItem>

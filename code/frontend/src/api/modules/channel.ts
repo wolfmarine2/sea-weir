@@ -21,3 +21,20 @@ export function update(payload: ChannelPayload & { id: number }): Promise<Channe
 export function remove(id: number): Promise<unknown> {
   return request<unknown>({ url: `/api/channel/${id}`, method: 'delete' });
 }
+
+/** `GET /api/channel/update_balance/:id`:刷新单渠道余额(对接上游平台)。 */
+export function updateBalance(
+  id: number,
+): Promise<{ id: number; balance: number; balance_updated_time: number }> {
+  return request({
+    url: `/api/channel/update_balance/${id}`,
+    method: 'get',
+  });
+}
+
+/** `GET /api/channel/update_balance`:刷新全部渠道余额(尽力而为)。 */
+export function updateAllBalances(): Promise<{
+  results: Array<{ id: number; name: string; balance?: number; error?: string }>;
+}> {
+  return request({ url: '/api/channel/update_balance', method: 'get' });
+}

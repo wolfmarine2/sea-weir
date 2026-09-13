@@ -178,6 +178,14 @@ fn build_router(state: Arc<ServerState>) -> Router {
         )
         .route("/api/channel/search", get(handlers::channel::list))
         .route(
+            "/api/channel/update_balance",
+            get(handlers::channel::update_balance_all),
+        )
+        .route(
+            "/api/channel/update_balance/{id}",
+            get(handlers::channel::update_balance_by_id),
+        )
+        .route(
             "/api/channel/{id}",
             get(handlers::channel::get).delete(handlers::channel::delete),
         )

@@ -105,6 +105,7 @@ export interface ChannelItem {
   tag: string | null;
   setting: unknown;
   created_time: number;
+  balance_updated_time: number;
   test_time: number;
   response_time: number;
   key_count: number;

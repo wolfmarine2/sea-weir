@@ -11,6 +11,7 @@ use axum::response::Response;
 use axum::Json;
 use serde::Deserialize;
 
+use sea_weir_adaptors::ApiType;
 use sea_weir_repository::ChannelRepository;
 use sea_weir_types::domain::Channel;
 use sea_weir_types::dto::common::PageQuery;
@@ -297,5 +298,133 @@ pub async fn delete(
     match repo.delete(id).await {
         Ok(()) => response::ok(serde_json::json!({})),
         Err(e) => response::err(e),
+    }
+}
+
+/// `GET /api/channel/update_balance/:id`(AdminAuth):刷新单渠道余额。
+pub async fn update_balance_by_id(
+    State(state): State<Arc<ServerState>>,
+    _auth: AdminUser,
+    Path(id): Path<i64>,
+) -> Response {
+    let repo = match channel_repo(&state) {
+        Ok(repo) => repo,
+        Err(resp) => return resp,
+    };
+    let channel = match repo.find_by_id(id).await {
+        Ok(Some(c)) => c,
+        Ok(None) => return response::err(AppError::NotFound("渠道不存在".into())),
+        Err(e) => return response::err(e),
+    };
+
+    match refresh_balance(&state, &channel).await {
+        Ok(balance) => {
+            let now = chrono::Utc::now().timestamp();
+            if let Err(e) = repo.update_balance(id, balance, now).await {
+                return response::err(e);
+            }
+            response::ok(serde_json::json!({
+                "id": id,
+                "balance": balance,
+                "balance_updated_time": now,
+            }))
+        }
+        Err(resp) => resp,
+    }
+}
+
+/// `GET /api/channel/update_balance`(AdminAuth):刷新全部渠道余额(尽力而为)。
+pub async fn update_balance_all(
+    State(state): State<Arc<ServerState>>,
+    _auth: AdminUser,
+) -> Response {
+    let repo = match channel_repo(&state) {
+        Ok(repo) => repo,
+        Err(resp) => return resp,
+    };
+    let channels = match repo.list_paged(0, 1000).await {
+        Ok(rows) => rows,
+        Err(e) => return response::err(e),
+    };
+
+    let mut results = Vec::with_capacity(channels.len());
+    for channel in channels {
+        let id = channel.id;
+        let name = channel.name.clone();
+        match refresh_balance(&state, &channel).await {
+            Ok(balance) => {
+                let now = chrono::Utc::now().timestamp();
+                if let Err(e) = repo.update_balance(id, balance, now).await {
+                    results.push(serde_json::json!({"id": id, "name": name, "error": e.to_string()}));
+                } else {
+                    results.push(serde_json::json!({"id": id, "name": name, "balance": balance}));
+                }
+            }
+            Err(_resp) => {
+                results.push(serde_json::json!({"id": id, "name": name, "error": "不支持或上游错误"}));
+            }
+        }
+    }
+    response::ok(serde_json::json!({ "results": results }))
+}
+
+/// 按渠道类型探测余额。未知类型按 OpenAI 兼容尝试。
+async fn refresh_balance(state: &ServerState, channel: &Channel) -> Result<f64, Response> {
+    match ApiType::from_channel_type(channel.r#type).unwrap_or(ApiType::OpenAi) {
+        ApiType::OpenAi => query_openai_balance(state, channel).await,
+        other => Err(response::err(AppError::Biz(format!(
+            "渠道类型 {other:?} 暂不支持余额探测"
+        )))),
+    }
+}
+
+/// OpenAI 兼容平台:`GET {base}/dashboard/billing/subscription`。
+///
+/// 优先取 `total_granted - total_used`(剩余额度);否则取 `hard_limit_usd`(额度上限)。
+async fn query_openai_balance(state: &ServerState, channel: &Channel) -> Result<f64, Response> {
+    let base = match channel.base_url.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(b) => b.trim_end_matches("/v1").trim_end_matches('/'),
+        None => return Err(response::err(AppError::BadRequest("渠道未配置 base_url".into()))),
+    };
+    let key = channel
+        .keys()
+        .first()
+        .map(|k| k.to_string())
+        .filter(|k| !k.is_empty());
+    let Some(key) = key else {
+        return Err(response::err(AppError::BadRequest("渠道未配置密钥".into())));
+    };
+
+    let url = format!("{base}/dashboard/billing/subscription");
+    let resp = state
+        .http
+        .get(&url)
+        .bearer_auth(&key)
+        .send()
+        .await
+        .map_err(|e| response::err(AppError::Upstream(format!("余额查询请求失败: {e}"))))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(response::err(AppError::Upstream(format!(
+            "上游余额接口返回 {status}: {}",
+            text.chars().take(300).collect::<String>()
+        ))));
+    }
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| response::err(AppError::Upstream(format!("解析余额响应失败: {e}"))))?;
+    parse_balance(&body)
+        .map_err(|e| response::err(AppError::Upstream(format!("无法解析余额: {e}"))))
+}
+
+fn parse_balance(body: &serde_json::Value) -> Result<f64, String> {
+    let num = |key: &str| body.get(key).and_then(|v| v.as_f64());
+    match (num("total_granted"), num("total_used")) {
+        (Some(granted), Some(used)) => Ok(granted - used),
+        _ => num("hard_limit_usd").ok_or_else(|| {
+            "响应中无 total_granted/total_used/hard_limit_usd 字段".to_string()
+        }),
     }
 }
