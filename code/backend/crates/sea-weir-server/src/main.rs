@@ -206,6 +206,15 @@ fn build_router(state: Arc<ServerState>) -> Router {
         .route("/api/log/search", get(handlers::log::all_logs))
         // 定价:倍率配置快照
         .route("/api/ratio_config", get(handlers::pricing::ratio_config))
+        // 系统选项 / 倍率配置(RootAuth)
+        .route(
+            "/api/option/",
+            get(handlers::option::list).put(handlers::option::update),
+        )
+        .route(
+            "/api/option",
+            get(handlers::option::list).put(handlers::option::update),
+        )
         // 中继面(TokenAuth / sk-token)
         .route(
             "/v1/chat/completions",

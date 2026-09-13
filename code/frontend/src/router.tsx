@@ -15,6 +15,7 @@ import { Navigate, createBrowserRouter } from 'react-router-dom';
 import AppLayout from '@/layouts/AppLayout';
 import AuthLayout from '@/layouts/AuthLayout';
 import ChannelPage from '@/pages/admin/ChannelPage';
+import SettingPage from '@/pages/admin/SettingPage';
 import Login from '@/pages/auth/Login';
 import LogPage from '@/pages/console/LogPage';
 import TokenPage from '@/pages/console/TokenPage';
@@ -50,6 +51,14 @@ export const router = createBrowserRouter([
         element: (
           <RequireRole minRole={10}>
             <ChannelPage />
+          </RequireRole>
+        ),
+      },
+      {
+        path: 'admin/setting',
+        element: (
+          <RequireRole minRole={100}>
+            <SettingPage />
           </RequireRole>
         ),
       },
