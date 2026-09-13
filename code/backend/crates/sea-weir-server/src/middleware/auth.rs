@@ -32,7 +32,9 @@ pub struct AuthUser {
 #[derive(Debug, Clone)]
 pub struct AuthToken {
     pub token_id: i64,
+    pub token_name: String,
     pub user_id: i64,
+    pub username: String,
     pub group: String,
     pub model_limits: Option<Vec<String>>,
     pub remain_quota: i64,
@@ -312,7 +314,9 @@ impl FromRequestParts<std::sync::Arc<ServerState>> for TokenAuth {
 
         Ok(TokenAuth(AuthToken {
             token_id: token.id,
+            token_name: token.name.clone(),
             user_id: token.user_id,
+            username: user.username.clone(),
             group,
             model_limits: None,
             remain_quota: token.remain_quota,

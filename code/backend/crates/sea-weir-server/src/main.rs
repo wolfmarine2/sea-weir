@@ -25,9 +25,12 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use clap::Parser;
 
-use sea_weir_repository::pg::{PgChannelRepository, PgOptionRepository, PgTokenRepository, PgUserRepository};
+use sea_weir_repository::pg::{
+    PgChannelRepository, PgLogRepository, PgOptionRepository, PgTokenRepository, PgUserRepository,
+};
 use sea_weir_repository::{
-    ChannelRepository, DbPools, OptionRepository, RepositoryContext, TokenRepository, UserRepository,
+    ChannelRepository, DbPools, LogRepository, OptionRepository, RepositoryContext, TokenRepository,
+    UserRepository,
 };
 use sea_weir_server::app_state::ServerState;
 use sea_weir_server::handlers;
@@ -67,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(version = env!("CARGO_PKG_VERSION"), started, "sea-weir-server 启动");
 
     // 4. 主库/日志库连接池 + 已实现的 Repository(数据库不可用时降级启动)
-    let (users, options, tokens, channels) = connect_repositories(&config).await;
+    let (users, options, tokens, channels, logs) = connect_repositories(&config).await;
 
     // 5. Valkey 客户端 + pub/sub:TODO(TDD)。当前仅记录配置来源,未建立连接。
     tracing::info!(cache_url = %config.cache.url, "缓存配置已加载(Valkey 客户端待接入)");
@@ -80,6 +83,7 @@ async fn main() -> anyhow::Result<()> {
         options,
         tokens,
         channels,
+        logs,
         http: reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(600))
             .build()
@@ -107,18 +111,19 @@ async fn connect_repositories(
     Option<Arc<dyn OptionRepository>>,
     Option<Arc<dyn TokenRepository>>,
     Option<Arc<dyn ChannelRepository>>,
+    Option<Arc<dyn LogRepository>>,
 ) {
     let dsn = config.database.dsn.trim();
     if dsn.is_empty() || dsn.contains("CHANGE_ME") {
         tracing::warn!("database.dsn 未配置(仍为占位值),跳过数据库连接");
-        return (None, None, None, None);
+        return (None, None, None, None, None);
     }
 
     let pools = match DbPools::connect(&config.database).await {
         Ok(pools) => pools,
         Err(e) => {
             tracing::warn!(error = %e, "数据库不可用,以降级模式启动");
-            return (None, None, None, None);
+            return (None, None, None, None, None);
         }
     };
 
@@ -135,7 +140,8 @@ async fn connect_repositories(
         Some(Arc::new(PgUserRepository::new(ctx.clone()))),
         Some(Arc::new(PgOptionRepository::new(ctx.clone()))),
         Some(Arc::new(PgTokenRepository::new(ctx.clone()))),
-        Some(Arc::new(PgChannelRepository::new(ctx))),
+        Some(Arc::new(PgChannelRepository::new(ctx.clone()))),
+        Some(Arc::new(PgLogRepository::new(ctx))),
     )
 }
 

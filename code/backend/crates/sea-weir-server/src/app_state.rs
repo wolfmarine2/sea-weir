@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 
-use sea_weir_repository::{ChannelRepository, OptionRepository, TokenRepository, UserRepository};
+use sea_weir_repository::{
+    ChannelRepository, LogRepository, OptionRepository, TokenRepository, UserRepository,
+};
 use sea_weir_types::config::AppConfig;
 
 use crate::session::SessionSigner;
@@ -41,6 +43,8 @@ pub struct ServerState {
     pub options: Option<Arc<dyn OptionRepository>>,
     pub tokens: Option<Arc<dyn TokenRepository>>,
     pub channels: Option<Arc<dyn ChannelRepository>>,
+    /// 消费日志(独立日志库 pool;未配置时复用主库)。
+    pub logs: Option<Arc<dyn LogRepository>>,
     /// 转发上游用的 HTTP 客户端(连接池复用)。
     pub http: reqwest::Client,
     /// 进程启动时刻(unix 秒)
