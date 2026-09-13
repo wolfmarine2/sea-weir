@@ -12,6 +12,7 @@ pub mod background;
 pub mod config;
 pub mod handlers;
 pub mod middleware;
+pub mod pricing;
 pub mod response;
 pub mod router;
 pub mod session;

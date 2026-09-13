@@ -15,7 +15,6 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use futures_util::StreamExt;
-use rust_decimal::Decimal;
 
 use sea_weir_core::relay::{autoban, billing, select};
 use sea_weir_types::constants::{status as ch_status, LogType};
@@ -25,25 +24,6 @@ use sea_weir_types::{AppError, NewApiError, RelayFormat};
 
 use crate::app_state::ServerState;
 use crate::middleware::auth::TokenAuth;
-
-/// 暂缺定价视图,先用单位倍率;接入 options/定价缓存后替换。
-fn default_price() -> billing::PriceData {
-    billing::PriceData {
-        model_ratio: Decimal::ONE,
-        group_ratio: Decimal::ONE,
-        completion_ratio: Decimal::ONE,
-        cache_ratio: Decimal::ONE,
-        create_cache_ratio: Decimal::ONE,
-        cache_creation_5m_ratio: Decimal::ONE,
-        cache_creation_1h_ratio: Decimal::ONE,
-        image_ratio: Decimal::ONE,
-        audio_ratio: Decimal::ONE,
-        audio_input_price: Decimal::ZERO,
-        model_price: None,
-        tiered_expr: None,
-        other_ratios: Vec::new(),
-    }
-}
 
 fn relay_fail(e: AppError) -> Response {
     crate::response::relay_err(e.into(), RelayFormat::OpenAi)
@@ -210,6 +190,13 @@ pub async fn chat_completions(
     let request_id = uuid::Uuid::new_v4().to_string();
     let started = Instant::now();
 
+    // 定价视图(进程内 60s 缓存):按模型/分组合成倍率。
+    let price = state
+        .pricing
+        .get(state.options.as_ref().map(|o| o.as_ref()))
+        .await
+        .price_for(&origin_model, &auth.group);
+
     let channels = match state.channels.as_ref() {
         Some(repo) => repo.clone(),
         None => return relay_fail(AppError::Database("数据库未连接".into())),
@@ -266,11 +253,12 @@ pub async fn chat_completions(
                     origin_model.clone(),
                     request_id.clone(),
                     resp,
+                    price.clone(),
                 );
             }
             Ok(UpstreamOutcome::Json(upstream_body)) => {
                 let usage = usage_from_body(&upstream_body);
-                let quota = billing::calculate_quota(&usage, &default_price());
+                let quota = billing::calculate_quota(&usage, &price);
                 let use_time = started.elapsed().as_secs() as i32;
                 if let Err(e) = charge(&state, &auth, quota).await {
                     return relay_fail(e);
@@ -330,6 +318,7 @@ fn stream_response(
     model: String,
     request_id: String,
     resp: reqwest::Response,
+    price: billing::PriceData,
 ) -> Response {
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(16);
     let started = Instant::now();
@@ -357,7 +346,7 @@ fn stream_response(
                 }
             }
         }
-        let quota = billing::calculate_quota(&usage, &default_price());
+        let quota = billing::calculate_quota(&usage, &price);
         if let Err(e) = charge(&state, &auth, quota).await {
             tracing::warn!(error = %e, request_id, "流式扣费失败");
             return;

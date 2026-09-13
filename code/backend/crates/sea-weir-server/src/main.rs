@@ -84,6 +84,7 @@ async fn main() -> anyhow::Result<()> {
         tokens,
         channels,
         logs,
+        pricing: sea_weir_server::pricing::PricingCache::new(),
         http: reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(600))
             .build()
@@ -200,6 +201,8 @@ fn build_router(state: Arc<ServerState>) -> Router {
         .route("/api/log/", get(handlers::log::all_logs))
         .route("/api/log", get(handlers::log::all_logs))
         .route("/api/log/search", get(handlers::log::all_logs))
+        // 定价:倍率配置快照
+        .route("/api/ratio_config", get(handlers::pricing::ratio_config))
         // 中继面(TokenAuth / sk-token)
         .route(
             "/v1/chat/completions",

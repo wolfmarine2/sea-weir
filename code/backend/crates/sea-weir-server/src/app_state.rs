@@ -45,6 +45,8 @@ pub struct ServerState {
     pub channels: Option<Arc<dyn ChannelRepository>>,
     /// 消费日志(独立日志库 pool;未配置时复用主库)。
     pub logs: Option<Arc<dyn LogRepository>>,
+    /// 定价视图缓存(进程内,60s TTL)。
+    pub pricing: crate::pricing::PricingCache,
     /// 转发上游用的 HTTP 客户端(连接池复用)。
     pub http: reqwest::Client,
     /// 进程启动时刻(unix 秒)
