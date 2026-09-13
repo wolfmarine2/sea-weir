@@ -11,22 +11,29 @@ import { useEffect } from 'react';
 import { Layout, Menu, Typography } from 'antd';
 import { Link, Outlet, useLocation } from 'react-router-dom';
 import { useStatusStore } from '@/stores/status';
+import { useUserStore } from '@/stores/user';
+import { ROLE } from '@/types';
 
 const { Header, Content } = Layout;
-
-const NAV = [
-  { key: '/', label: <Link to="/">首页</Link> },
-  { key: '/console/token', label: <Link to="/console/token">令牌</Link> },
-];
 
 export default function AppLayout() {
   const systemName = useStatusStore((s) => s.systemName);
   const fetchStatus = useStatusStore((s) => s.fetch);
+  const role = useUserStore((s) => s.role);
   const location = useLocation();
 
   useEffect(() => {
     void fetchStatus();
   }, [fetchStatus]);
+
+  // 导航可见性:与路由守卫一样只是体验层,真正权限在服务端。
+  const nav = [
+    { key: '/', label: <Link to="/">首页</Link> },
+    { key: '/console/token', label: <Link to="/console/token">令牌</Link> },
+    ...(role >= ROLE.ADMIN
+      ? [{ key: '/admin/channel', label: <Link to="/admin/channel">渠道</Link> }]
+      : []),
+  ];
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
@@ -38,7 +45,7 @@ export default function AppLayout() {
           theme="dark"
           mode="horizontal"
           selectedKeys={[location.pathname]}
-          items={NAV}
+          items={nav}
           style={{ flex: 1, minWidth: 0 }}
         />
       </Header>

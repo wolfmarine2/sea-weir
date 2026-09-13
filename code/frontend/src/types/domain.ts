@@ -83,3 +83,46 @@ export interface TokenItem {
   group: string;
   cross_group_retry: boolean;
 }
+
+/**
+ * 渠道。与后端 `sea_weir_types::domain::Channel` 一致;`key` 不下发,
+ * 列表额外带 `key_count`(多 key 数量)。
+ */
+export interface ChannelItem {
+  id: number;
+  type: number;
+  name: string;
+  /** 1 启用 / 2 手动禁用 / 3 自动禁用 */
+  status: number;
+  weight: number;
+  priority: number;
+  group: string;
+  models: string;
+  base_url: string | null;
+  balance: number;
+  used_quota: number;
+  auto_ban: number;
+  tag: string | null;
+  setting: unknown;
+  created_time: number;
+  test_time: number;
+  response_time: number;
+  key_count: number;
+  [key: string]: unknown;
+}
+
+/** 渠道创建/更新入参。`key` 更新时可省略(沿用原密钥)。 */
+export interface ChannelPayload {
+  type: number;
+  name: string;
+  models: string;
+  group: string;
+  key?: string | undefined;
+  base_url?: string | undefined;
+  status?: number | undefined;
+  weight?: number | undefined;
+  priority?: number | undefined;
+  auto_ban?: number | undefined;
+  test_model?: string | undefined;
+  tag?: string | undefined;
+}

@@ -14,6 +14,7 @@ import type { ReactNode } from 'react';
 import { Navigate, createBrowserRouter } from 'react-router-dom';
 import AppLayout from '@/layouts/AppLayout';
 import AuthLayout from '@/layouts/AuthLayout';
+import ChannelPage from '@/pages/admin/ChannelPage';
 import Login from '@/pages/auth/Login';
 import TokenPage from '@/pages/console/TokenPage';
 import Home from '@/pages/public/Home';
@@ -32,6 +33,14 @@ export const router = createBrowserRouter([
         element: (
           <RequireRole minRole={1}>
             <TokenPage />
+          </RequireRole>
+        ),
+      },
+      {
+        path: 'admin/channel',
+        element: (
+          <RequireRole minRole={10}>
+            <ChannelPage />
           </RequireRole>
         ),
       },
