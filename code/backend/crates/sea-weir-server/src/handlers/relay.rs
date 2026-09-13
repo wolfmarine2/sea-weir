@@ -1,10 +1,11 @@
 //! 中继面入口。对应 C4 组件 `relay_entry`。
 //!
-//! 现状:sk-token 认证 → 重试循环(每次重新选渠取下一优先级档,档内加权随机)
-//! → 转发上游 → 成功扣费 + 记消费日志;失败按 autoban 判定(自动禁用 / 是否重试)。
+//! 入口:OpenAI `POST /v1/chat/completions`、Claude `POST /v1/messages`。
+//! 两者共用 [`run_relay`]:认证 → 协议转换(入口格式 → OpenAI,上游统一按 OpenAI 兼容转发)
+//! → 重试循环选路 → 扣费 + 消费日志 → 响应转回入口格式。
 //!
-//! 待补:core::relay::pipeline 的预扣/结算/退款状态机(SEQ-003)、SSE usage 注入、
-//! 流式计费、Claude/Gemini 入口格式、上游 header/参数改写、request-id 贯穿。
+//! 待补:Claude/Gemini 流式(SSE 事件改写)、上游 header/参数改写、
+//! core::relay::pipeline 的预扣/结算状态机、MJ/任务类入口。
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -16,17 +17,18 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use futures_util::StreamExt;
 
+use sea_weir_core::relay::convert::{convert_request, convert_response, RequestConversionChain};
 use sea_weir_core::relay::{autoban, billing, select};
 use sea_weir_types::constants::{status as ch_status, LogType};
 use sea_weir_types::domain::{Ability, Channel, Log};
-use sea_weir_types::dto::Usage;
+use sea_weir_types::dto::{RelayRequest, Usage};
 use sea_weir_types::{AppError, NewApiError, RelayFormat};
 
 use crate::app_state::ServerState;
-use crate::middleware::auth::TokenAuth;
+use crate::middleware::auth::{AuthToken, TokenAuth};
 
-fn relay_fail(e: AppError) -> Response {
-    crate::response::relay_err(e.into(), RelayFormat::OpenAi)
+fn relay_fail(e: AppError, format: RelayFormat) -> Response {
+    crate::response::relay_err(e.into(), format)
 }
 
 /// 拼接上游 URL:base_url 可能已含 `/v1` 或完整前缀。
@@ -41,9 +43,7 @@ fn upstream_url(base_url: &str, path: &str) -> String {
 
 /// 一次上游调用的结果。
 enum UpstreamOutcome {
-    /// 流式响应(直通,计费等 SSE 管线落地后补)。
     Stream(reqwest::Response),
-    /// 非流式响应(已解析出 JSON)。
     Json(serde_json::Value),
 }
 
@@ -62,15 +62,7 @@ async fn forward_once(
         .json(body)
         .send()
         .await
-        .map_err(|e| NewApiError {
-            status_code: 502,
-            error_code: "channel:request_failed".into(),
-            error_type: "new_api_error".into(),
-            message: format!("上游请求失败: {e}"),
-            local_error: false,
-            skip_retry: false,
-            record_error_log: true,
-        })?;
+        .map_err(|e| channel_err("channel:request_failed", &format!("上游请求失败: {e}"), 502))?;
 
     let status = resp.status();
     if !status.is_success() {
@@ -97,15 +89,19 @@ async fn forward_once(
     resp.json::<serde_json::Value>()
         .await
         .map(UpstreamOutcome::Json)
-        .map_err(|e| NewApiError {
-            status_code: 502,
-            error_code: "channel:parse_failed".into(),
-            error_type: "new_api_error".into(),
-            message: format!("解析上游响应失败: {e}"),
-            local_error: false,
-            skip_retry: false,
-            record_error_log: true,
-        })
+        .map_err(|e| channel_err("channel:parse_failed", &format!("解析上游响应失败: {e}"), 502))
+}
+
+fn channel_err(code: &str, message: &str, status_code: u16) -> NewApiError {
+    NewApiError {
+        status_code,
+        error_code: code.into(),
+        error_type: "new_api_error".into(),
+        message: message.into(),
+        local_error: false,
+        skip_retry: false,
+        record_error_log: true,
+    }
 }
 
 fn usage_from_body(body: &serde_json::Value) -> Usage {
@@ -130,11 +126,11 @@ fn usage_from_body(body: &serde_json::Value) -> Usage {
 
 /// 本次尝试的选路:在「尚未尝试过」的候选里取当前最高优先级档,档内加权随机。
 ///
-/// 说明:排除已失败渠道(而非固定取第 N 档),是为了正确处理自动禁用 —
-/// 失败渠道被禁用后候选集会缩小,固定档位索引会越界。
+/// 排除已失败渠道(而非固定取第 N 档),以正确处理自动禁用导致的候选集缩小;
+/// 排除后为空时回落到全部候选,允许唯一渠道的瞬时错误重试。
 fn pick_channel<'a>(
     candidates: &'a [Channel],
-    auth: &crate::middleware::auth::AuthToken,
+    auth: &AuthToken,
     origin_model: &str,
     tried: &std::collections::HashSet<i64>,
 ) -> Option<&'a Channel> {
@@ -142,7 +138,6 @@ fn pick_channel<'a>(
         .iter()
         .filter(|c| !tried.contains(&c.id))
         .collect();
-    // 若排除后为空(如唯一渠道的瞬时错误),回落到全部候选以允许重试。
     let available: Vec<&Channel> = if available.is_empty() {
         candidates.iter().collect()
     } else {
@@ -171,12 +166,32 @@ fn pick_channel<'a>(
         .and_then(|id| available.iter().find(|c| c.id == id).copied())
 }
 
-/// `POST /v1/chat/completions`(中继面,TokenAuth)。含重试循环。
+/// `POST /v1/chat/completions`(OpenAI 入口)。
 pub async fn chat_completions(
     State(state): State<Arc<ServerState>>,
     TokenAuth(auth): TokenAuth,
     _headers: HeaderMap,
-    Json(mut body): Json<serde_json::Value>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    run_relay(state, auth, RelayFormat::OpenAi, body).await
+}
+
+/// `POST /v1/messages`(Claude Messages 入口)。
+pub async fn claude_messages(
+    State(state): State<Arc<ServerState>>,
+    TokenAuth(auth): TokenAuth,
+    _headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    run_relay(state, auth, RelayFormat::Claude, body).await
+}
+
+/// 中继主流程。`entry` 为入口协议格式;上游统一按 OpenAI 兼容协议调用。
+async fn run_relay(
+    state: Arc<ServerState>,
+    auth: AuthToken,
+    entry: RelayFormat,
+    body: serde_json::Value,
 ) -> Response {
     let origin_model = body
         .get("model")
@@ -184,9 +199,26 @@ pub async fn chat_completions(
         .unwrap_or_default()
         .to_string();
     if origin_model.is_empty() {
-        return relay_fail(AppError::BadRequest("缺少 model".into()));
+        return relay_fail(AppError::BadRequest("缺少 model".into()), entry);
     }
     let is_stream = body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    // Claude/Gemini 流式的事件改写尚未实现。
+    if is_stream && entry != RelayFormat::OpenAi {
+        return crate::response::relay_err(
+            NewApiError {
+                status_code: 501,
+                error_code: String::new(),
+                error_type: "new_api_error".into(),
+                message: "该入口暂不支持流式响应".into(),
+                local_error: true,
+                skip_retry: true,
+                record_error_log: false,
+            },
+            entry,
+        );
+    }
+
     let request_id = uuid::Uuid::new_v4().to_string();
     let started = Instant::now();
 
@@ -197,9 +229,26 @@ pub async fn chat_completions(
         .await
         .price_for(&origin_model, &auth.group);
 
+    // 协议转换:入口格式 → OpenAI(上游为 OpenAI 兼容)。
+    let mut chain = RequestConversionChain::default();
+    let relay_req = RelayRequest {
+        model: origin_model.clone(),
+        stream: is_stream,
+        raw: body,
+    };
+    let mut upstream_body = match convert_request(
+        &relay_req,
+        entry,
+        RelayFormat::OpenAi,
+        &mut chain,
+    ) {
+        Ok(v) => v,
+        Err(e) => return relay_fail(e, entry),
+    };
+
     let channels = match state.channels.as_ref() {
         Some(repo) => repo.clone(),
-        None => return relay_fail(AppError::Database("数据库未连接".into())),
+        None => return relay_fail(AppError::Database("数据库未连接".into()), entry),
     };
 
     let retry_times = state.config.relay.retry_times;
@@ -207,10 +256,9 @@ pub async fn chat_completions(
     let mut tried = std::collections::HashSet::new();
 
     for attempt in 0..=retry_times {
-        // 每次尝试重新拉候选(自动禁用的渠道已剔除),并排除本请求内已失败的渠道。
         let candidates = match channels.list_candidates(&auth.group, &origin_model).await {
             Ok(c) => c,
-            Err(e) => return relay_fail(e),
+            Err(e) => return relay_fail(e, entry),
         };
         let Some(channel) = pick_channel(&candidates, &auth, &origin_model, &tried) else {
             break;
@@ -219,7 +267,7 @@ pub async fn chat_completions(
         let keys = channel.keys();
         if keys.is_empty() {
             last_err = Some(channel_err("channel:no_key", "渠道未配置密钥", 502));
-            break; // 本地配置问题,非上游,不重试
+            break;
         }
         let idx = if keys.len() == 1 {
             0
@@ -230,7 +278,7 @@ pub async fn chat_completions(
 
         let Some(base_url) = channel.base_url.as_deref().filter(|s| !s.trim().is_empty()) else {
             last_err = Some(channel_err("channel:no_base_url", "渠道未配置 base_url", 502));
-            break; // 本地配置问题
+            break;
         };
         let upstream_model = channel
             .model_mapping
@@ -239,12 +287,12 @@ pub async fn chat_completions(
             .and_then(|v| v.as_str())
             .map(str::to_string)
             .unwrap_or_else(|| origin_model.clone());
-        if let Some(obj) = body.as_object_mut() {
+        if let Some(obj) = upstream_body.as_object_mut() {
             obj.insert("model".into(), serde_json::json!(upstream_model));
         }
 
         let url = upstream_url(base_url, "/v1/chat/completions");
-        match forward_once(&state.http, &url, &channel_key, &body, is_stream).await {
+        match forward_once(&state.http, &url, &channel_key, &upstream_body, is_stream).await {
             Ok(UpstreamOutcome::Stream(resp)) => {
                 return stream_response(
                     state.clone(),
@@ -256,12 +304,12 @@ pub async fn chat_completions(
                     price.clone(),
                 );
             }
-            Ok(UpstreamOutcome::Json(upstream_body)) => {
-                let usage = usage_from_body(&upstream_body);
+            Ok(UpstreamOutcome::Json(upstream_resp)) => {
+                let usage = usage_from_body(&upstream_resp);
                 let quota = billing::calculate_quota(&usage, &price);
                 let use_time = started.elapsed().as_secs() as i32;
                 if let Err(e) = charge(&state, &auth, quota).await {
-                    return relay_fail(e);
+                    return relay_fail(e, entry);
                 }
                 log_consume(
                     &state,
@@ -275,17 +323,17 @@ pub async fn chat_completions(
                     &request_id,
                 )
                 .await;
-                return (StatusCode::OK, Json(upstream_body)).into_response();
+
+                let out = match convert_response(&upstream_resp, RelayFormat::OpenAi, entry) {
+                    Ok(v) => v,
+                    Err(e) => return relay_fail(e, entry),
+                };
+                return (StatusCode::OK, Json(out)).into_response();
             }
             Err(err) => {
-                // 自动禁用判定(命中禁用码,默认仅 401)。
                 if autoban::should_disable(&err, channel.auto_ban != 0) {
                     let _ = channels
-                        .update_status(
-                            channel.id,
-                            ch_status::AUTO_DISABLED,
-                            &err.message,
-                        )
+                        .update_status(channel.id, ch_status::AUTO_DISABLED, &err.message)
                         .await;
                 }
                 tried.insert(channel.id);
@@ -295,7 +343,7 @@ pub async fn chat_completions(
                     affinity_skip_retry: false,
                 };
                 if !autoban::should_retry(&err, &ctx) {
-                    return crate::response::relay_err(err, RelayFormat::OpenAi);
+                    return crate::response::relay_err(err, entry);
                 }
                 last_err = Some(err);
             }
@@ -304,16 +352,16 @@ pub async fn chat_completions(
 
     crate::response::relay_err(
         last_err.unwrap_or_else(|| NewApiError::from(AppError::NotFound("无可用渠道".into()))),
-        RelayFormat::OpenAi,
+        entry,
     )
 }
 
-/// 流式响应:透传 SSE 字节,同时扫描 `usage`;流结束后扣费 + 记消费日志。
+/// 流式响应(仅 OpenAI 入口):透传 SSE 字节,同时扫描 `usage`;流结束后扣费 + 记账。
 ///
 /// 客户端中途断开时已消费部分仍结算(与 SEQ-004 一致)。
 fn stream_response(
     state: Arc<ServerState>,
-    auth: crate::middleware::auth::AuthToken,
+    auth: AuthToken,
     channel_id: i64,
     model: String,
     request_id: String,
@@ -373,11 +421,11 @@ fn stream_response(
         .header(header::CONTENT_TYPE, "text/event-stream")
         .header(header::CACHE_CONTROL, "no-cache")
         .body(Body::from_stream(body_stream))
-        .unwrap_or_else(|_| relay_fail(AppError::Internal("构造流式响应失败".into())))
+        .unwrap_or_else(|_| relay_fail(AppError::Internal("构造流式响应失败".into()), RelayFormat::OpenAi))
 }
 
 /// 从 SSE 字节里扫描 `usage`(OpenAI 流式在 `stream_options.include_usage` 下
-/// 于末尾 chunk 带 `usage` 字段;无 usage 则不计费)。
+/// 于末尾 chunk 带 `usage`;无 usage 则不计费)。
 fn scan_sse_usage(line_buf: &mut String, chunk: &[u8], usage: &mut Usage) {
     line_buf.push_str(&String::from_utf8_lossy(chunk));
     while let Some(pos) = line_buf.find('\n') {
@@ -399,26 +447,10 @@ fn scan_sse_usage(line_buf: &mut String, chunk: &[u8], usage: &mut Usage) {
     }
 }
 
-fn channel_err(code: &str, message: &str, status_code: u16) -> NewApiError {
-    NewApiError {
-        status_code,
-        error_code: code.into(),
-        error_type: "new_api_error".into(),
-        message: message.into(),
-        local_error: false,
-        skip_retry: false,
-        record_error_log: true,
-    }
-}
-
 /// 按上游 usage 扣费:用户钱包与令牌额度各扣一次(token 无限额度时跳过)。
 ///
 /// NOTE(TDD): 最小实现(无预扣/退款);三段式(预扣→结算)在 pipeline 落地后替换。
-async fn charge(
-    state: &ServerState,
-    auth: &crate::middleware::auth::AuthToken,
-    quota: i64,
-) -> Result<(), AppError> {
+async fn charge(state: &ServerState, auth: &AuthToken, quota: i64) -> Result<(), AppError> {
     if quota <= 0 {
         return Ok(());
     }
@@ -435,7 +467,6 @@ async fn charge(
         return Err(AppError::QuotaExceeded);
     }
     if !tokens.try_decrease_quota(auth.token_id, quota).await? {
-        // 令牌额度不足 → 回滚用户扣减,保持账目一致。
         users.increase_quota(auth.user_id, quota).await?;
         return Err(AppError::QuotaExceeded);
     }
@@ -443,9 +474,10 @@ async fn charge(
 }
 
 /// 写消费日志(失败仅告警,不影响响应)。
+#[allow(clippy::too_many_arguments)]
 async fn log_consume(
     state: &ServerState,
-    auth: &crate::middleware::auth::AuthToken,
+    auth: &AuthToken,
     channel_id: i64,
     model: &str,
     usage: &Usage,
