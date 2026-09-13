@@ -1,10 +1,12 @@
 //! `channel` 域 handler:渠道管理(AdminAuth,CONTRACTS §4)。
 //!
-//! 已落地:分页列表(key 脱敏,含多 key 数量)/ 创建 / 更新 / 删除。
+//! 已落地:分页列表(key 脱敏,含多 key 数量)/ 创建 / 更新 / 删除 /
+//! 余额探测(国内平台内置 + setting.balance 可配)/ 渠道测试 / 拉取上游模型列表。
 //! 创建与更新都会事务内重建 abilities 三元组(见 ChannelRepository::sync_abilities)。
-//! 待补:测试渠道、余额探测、多 key 管理、上游模型拉取、密钥揭示(敏感凭证)。
+//! 待补:多 key 管理、批量/标签、密钥揭示(敏感凭证)、Codex/Ollama 专项。
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::extract::{Path, Query, State};
 use axum::response::Response;
@@ -13,6 +15,7 @@ use serde::Deserialize;
 
 use sea_weir_adaptors::ApiType;
 use sea_weir_repository::ChannelRepository;
+use sea_weir_types::constants::status as ch_status;
 use sea_weir_types::domain::Channel;
 use sea_weir_types::dto::common::PageQuery;
 use sea_weir_types::AppError;
@@ -516,6 +519,214 @@ fn as_f64_value(value: &serde_json::Value) -> Option<f64> {
         serde_json::Value::String(s) => s.trim().parse().ok(),
         _ => None,
     }
+}
+
+/// 拼接上游 URL(base_url 以 `/v1` 结尾且 path 也以 `/v1` 开头时去重)。
+fn join_url(base: &str, path: &str) -> String {
+    let base = base.trim_end_matches('/');
+    if base.ends_with("/v1") && path.starts_with("/v1") {
+        format!("{base}{}", &path[3..])
+    } else {
+        format!("{base}{path}")
+    }
+}
+
+/// 渠道首个可用密钥。
+fn first_key(channel: &Channel) -> Result<String, Response> {
+    channel
+        .keys()
+        .first()
+        .map(|k| k.to_string())
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| response::err(AppError::BadRequest("渠道未配置密钥".into())))
+}
+
+fn base_url(channel: &Channel) -> Result<&str, Response> {
+    channel
+        .base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| response::err(AppError::BadRequest("渠道未配置 base_url".into())))
+}
+
+/// 拉取上游模型列表(`GET {base}/v1/models`)。
+async fn fetch_upstream_models(
+    state: &ServerState,
+    channel: &Channel,
+) -> Result<Vec<String>, Response> {
+    let url = join_url(base_url(channel)?, "/v1/models");
+    let resp = state
+        .http
+        .get(&url)
+        .bearer_auth(first_key(channel)?)
+        .send()
+        .await
+        .map_err(|e| response::err(AppError::Upstream(format!("拉取模型请求失败: {e}"))))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(response::err(AppError::Upstream(format!(
+            "上游返回 {status}: {}",
+            text.chars().take(300).collect::<String>()
+        ))));
+    }
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| response::err(AppError::Upstream(format!("解析模型列表失败: {e}"))))?;
+
+    // OpenAI 兼容:`{"data":[{"id":...}]}`;部分平台:`{"models":["a","b"]}`。
+    let mut models: Vec<String> = Vec::new();
+    if let Some(list) = body.get("data").and_then(|v| v.as_array()) {
+        for item in list {
+            if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
+                models.push(id.to_string());
+            }
+        }
+    }
+    if models.is_empty() {
+        if let Some(list) = body.get("models").and_then(|v| v.as_array()) {
+            for item in list {
+                if let Some(id) = item.as_str() {
+                    models.push(id.to_string());
+                }
+            }
+        }
+    }
+    models.sort();
+    models.dedup();
+    Ok(models)
+}
+
+/// `GET /api/channel/fetch_models/:id`(AdminAuth):回源拉取该渠道的模型列表。
+pub async fn fetch_models_by_id(
+    State(state): State<Arc<ServerState>>,
+    _auth: AdminUser,
+    Path(id): Path<i64>,
+) -> Response {
+    let repo = match channel_repo(&state) {
+        Ok(repo) => repo,
+        Err(resp) => return resp,
+    };
+    let channel = match repo.find_by_id(id).await {
+        Ok(Some(c)) => c,
+        Ok(None) => return response::err(AppError::NotFound("渠道不存在".into())),
+        Err(e) => return response::err(e),
+    };
+    match fetch_upstream_models(&state, &channel).await {
+        Ok(models) => response::ok(serde_json::json!({ "id": id, "models": models })),
+        Err(resp) => resp,
+    }
+}
+
+/// 对渠道发一次最小请求测试连通性,并记录耗时。
+async fn probe_channel(state: &ServerState, channel: &Channel) -> Result<(bool, i64), Response> {
+    let test_model = channel
+        .test_model
+        .clone()
+        .filter(|s| !s.is_empty())
+        .or_else(|| channel.models.split(',').map(str::trim).find(|s| !s.is_empty()).map(str::to_string))
+        .ok_or_else(|| response::err(AppError::BadRequest("渠道未配置测试模型或模型列表".into())))?;
+
+    let url = join_url(base_url(channel)?, "/v1/chat/completions");
+    let body = serde_json::json!({
+        "model": test_model,
+        "messages": [{"role": "user", "content": "ping"}],
+        "max_tokens": 1,
+    });
+
+    let started = Instant::now();
+    let resp = state
+        .http
+        .post(&url)
+        .bearer_auth(first_key(channel)?)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| response::err(AppError::Upstream(format!("测试请求失败: {e}"))))?;
+    let elapsed = started.elapsed().as_millis() as i64;
+    Ok((resp.status().is_success(), elapsed))
+}
+
+/// `GET /api/channel/test/:id`(AdminAuth):测试单渠道,通过则记录耗时;
+/// 自动禁用的渠道测试通过后自动恢复启用并重建 abilities。
+pub async fn test_by_id(
+    State(state): State<Arc<ServerState>>,
+    _auth: AdminUser,
+    Path(id): Path<i64>,
+) -> Response {
+    let repo = match channel_repo(&state) {
+        Ok(repo) => repo,
+        Err(resp) => return resp,
+    };
+    let channel = match repo.find_by_id(id).await {
+        Ok(Some(c)) => c,
+        Ok(None) => return response::err(AppError::NotFound("渠道不存在".into())),
+        Err(e) => return response::err(e),
+    };
+
+    let (ok, elapsed) = match probe_channel(&state, &channel).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    let now = chrono::Utc::now().timestamp();
+    if let Err(e) = repo.record_test_result(id, elapsed, now).await {
+        tracing::warn!(error = %e, channel_id = id, "记录测试结果失败");
+    }
+
+    if ok && channel.status == ch_status::AUTO_DISABLED {
+        // 自动恢复:仅对「自动禁用」生效,手动禁用(2)不自动恢复。
+        if let Err(e) = repo
+            .update_status(id, ch_status::ENABLED, "渠道测试通过,自动恢复")
+            .await
+        {
+            tracing::warn!(error = %e, channel_id = id, "自动恢复启用失败");
+        }
+    }
+
+    response::ok(serde_json::json!({
+        "id": id,
+        "success": ok,
+        "response_time": elapsed,
+        "message": if ok { "测试通过" } else { "测试失败(上游返回非 2xx)" },
+    }))
+}
+
+/// `GET /api/channel/test`(AdminAuth):测试全部渠道(尽力而为)。
+pub async fn test_all(State(state): State<Arc<ServerState>>, _auth: AdminUser) -> Response {
+    let repo = match channel_repo(&state) {
+        Ok(repo) => repo,
+        Err(resp) => return resp,
+    };
+    let channels = match repo.list_paged(0, 1000).await {
+        Ok(rows) => rows,
+        Err(e) => return response::err(e),
+    };
+
+    let mut results = Vec::with_capacity(channels.len());
+    for channel in channels {
+        let id = channel.id;
+        let name = channel.name.clone();
+        match probe_channel(&state, &channel).await {
+            Ok((ok, elapsed)) => {
+                let now = chrono::Utc::now().timestamp();
+                let _ = repo.record_test_result(id, elapsed, now).await;
+                if ok && channel.status == ch_status::AUTO_DISABLED {
+                    let _ = repo
+                        .update_status(id, ch_status::ENABLED, "渠道测试通过,自动恢复")
+                        .await;
+                }
+                results.push(serde_json::json!({
+                    "id": id, "name": name, "success": ok, "response_time": elapsed
+                }));
+            }
+            Err(_) => results.push(serde_json::json!({
+                "id": id, "name": name, "success": false, "error": "未配置测试模型/base_url/密钥"
+            })),
+        }
+    }
+    response::ok(serde_json::json!({ "results": results }))
 }
 
 #[cfg(test)]

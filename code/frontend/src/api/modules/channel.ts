@@ -38,3 +38,25 @@ export function updateAllBalances(): Promise<{
 }> {
   return request({ url: '/api/channel/update_balance', method: 'get' });
 }
+
+/** `GET /api/channel/fetch_models/:id`:回源拉取该渠道的上游模型列表。 */
+export function fetchModels(id: number): Promise<{ id: number; models: string[] }> {
+  return request({ url: `/api/channel/fetch_models/${id}`, method: 'get' });
+}
+
+/** `GET /api/channel/test/:id`:测试单渠道连通性。 */
+export function testChannel(id: number): Promise<{
+  id: number;
+  success: boolean;
+  response_time: number;
+  message: string;
+}> {
+  return request({ url: `/api/channel/test/${id}`, method: 'get' });
+}
+
+/** `GET /api/channel/test`:测试全部渠道。 */
+export function testAllChannels(): Promise<{
+  results: Array<{ id: number; name: string; success: boolean; response_time?: number; error?: string }>;
+}> {
+  return request({ url: '/api/channel/test', method: 'get' });
+}

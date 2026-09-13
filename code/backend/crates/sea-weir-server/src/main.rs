@@ -192,6 +192,9 @@ fn build_router(state: Arc<ServerState>) -> Router {
             "/api/channel/update_balance/{id}",
             get(handlers::channel::update_balance_by_id),
         )
+        .route("/api/channel/fetch_models/{id}", get(handlers::channel::fetch_models_by_id))
+        .route("/api/channel/test", get(handlers::channel::test_all))
+        .route("/api/channel/test/{id}", get(handlers::channel::test_by_id))
         .route(
             "/api/channel/{id}",
             get(handlers::channel::get).delete(handlers::channel::delete),

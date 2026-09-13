@@ -48,7 +48,7 @@ const STATUS: Record<number, { color: string; text: string }> = {
 };
 
 export default function ChannelPage() {
-  const { message } = AntApp.useApp();
+  const { message, modal } = AntApp.useApp();
   const [form] = Form.useForm<ChannelForm>();
   const [modalOpen, setModalOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -133,6 +133,46 @@ export default function ChannelPage() {
     }
   };
 
+  const onTest = async (record: ChannelItem) => {
+    try {
+      const r = await api.channel.testChannel(record.id);
+      if (r.success) {
+        message.success(`测试通过,耗时 ${r.response_time}ms`);
+      } else {
+        message.warning(`测试失败:${r.message}`);
+      }
+      table.refresh();
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : '测试失败');
+    }
+  };
+
+  const onFetchModels = async (record: ChannelItem) => {
+    try {
+      const { models } = await api.channel.fetchModels(record.id);
+      modal.confirm({
+        title: `上游模型列表(${models.length} 个)`,
+        width: 560,
+        content: <Typography.Paragraph copyable={{ text: models.join(',') }}>{models.join(', ')}</Typography.Paragraph>,
+        okText: '写入渠道模型',
+        cancelText: '关闭',
+        onOk: async () => {
+          await api.channel.update({
+            id: record.id,
+            type: record.type,
+            name: record.name,
+            group: record.group,
+            models: models.join(','),
+          });
+          message.success('已写入渠道模型并重建 abilities');
+          table.refresh();
+        },
+      });
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : '拉取模型失败');
+    }
+  };
+
   const columns: TableColumnsType<ChannelItem> = [
     { title: 'ID', dataIndex: 'id', width: 70 },
     { title: '名称', dataIndex: 'name' },
@@ -181,6 +221,12 @@ export default function ChannelPage() {
           </Button>
           <Button size="small" onClick={() => void onRefreshBalance(record)}>
             刷新余额
+          </Button>
+          <Button size="small" onClick={() => void onTest(record)}>
+            测试
+          </Button>
+          <Button size="small" onClick={() => void onFetchModels(record)}>
+            拉取模型
           </Button>
           <Popconfirm title="确认删除该渠道?" onConfirm={() => void onDelete(record.id)}>
             <Button size="small" danger>
