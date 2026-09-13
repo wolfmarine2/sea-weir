@@ -14,6 +14,9 @@ pub trait ChannelRepository: Send + Sync {
     /// 渠道名是否已存在(创建前置校验)。
     async fn exists_name(&self, name: &str) -> AppResult<bool>;
 
+    /// 中继选路:按 (group, model) 取启用中的候选渠道(join abilities,按 priority 降序)。
+    async fn list_candidates(&self, group: &str, model: &str) -> AppResult<Vec<Channel>>;
+
     async fn create(&self, channel: &Channel) -> AppResult<i64>;
     async fn update(&self, channel: &Channel) -> AppResult<()>;
     async fn delete(&self, id: i64) -> AppResult<()>;

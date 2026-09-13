@@ -41,6 +41,8 @@ pub struct ServerState {
     pub options: Option<Arc<dyn OptionRepository>>,
     pub tokens: Option<Arc<dyn TokenRepository>>,
     pub channels: Option<Arc<dyn ChannelRepository>>,
+    /// 转发上游用的 HTTP 客户端(连接池复用)。
+    pub http: reqwest::Client,
     /// 进程启动时刻(unix 秒)
     pub started: u64,
 }

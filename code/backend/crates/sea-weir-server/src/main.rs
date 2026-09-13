@@ -80,6 +80,10 @@ async fn main() -> anyhow::Result<()> {
         options,
         tokens,
         channels,
+        http: reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(600))
+            .build()
+            .unwrap_or_default(),
         started,
     });
 
@@ -176,6 +180,11 @@ fn build_router(state: Arc<ServerState>) -> Router {
         .route(
             "/api/channel/{id}",
             get(handlers::channel::get).delete(handlers::channel::delete),
+        )
+        // 中继面(TokenAuth / sk-token)
+        .route(
+            "/v1/chat/completions",
+            post(handlers::relay::chat_completions),
         )
         // K8s 探针
         .route("/healthz", get(healthz))

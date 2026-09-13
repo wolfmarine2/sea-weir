@@ -57,6 +57,13 @@ const CHANNEL_COLUMNS: &str = r#"id, type, key, openai_organization, test_model,
     models, "group", used_quota, model_mapping, status_code_mapping, priority, auto_ban,
     other_info, tag, setting, param_override, header_override, channel_info, settings"#;
 
+/// join abilities 时用限定列名(两表都有 `group`/`model`/`priority`/`weight`/`tag`,必须限定)。
+const CHANNEL_COLUMNS_QUALIFIED: &str = r#"c.id, c.type, c.key, c.openai_organization,
+    c.test_model, c.status, c.name, c.weight, c.created_time, c.test_time, c.response_time,
+    c.base_url, c.balance, c.balance_updated_time, c.models, c."group", c.used_quota,
+    c.model_mapping, c.status_code_mapping, c.priority, c.auto_ban, c.other_info, c.tag,
+    c.setting, c.param_override, c.header_override, c.channel_info, c.settings"#;
+
 impl ChannelRow {
     fn into_domain(self) -> Channel {
         Channel {
@@ -158,6 +165,22 @@ impl crate::traits::ChannelRepository for PgChannelRepository {
                 .await
                 .map_err(db_err)?;
         Ok(exists)
+    }
+
+    async fn list_candidates(&self, group: &str, model: &str) -> AppResult<Vec<Channel>> {
+        let sql = format!(
+            "SELECT {CHANNEL_COLUMNS_QUALIFIED} FROM channels c \
+             JOIN abilities a ON a.channel_id = c.id \
+             WHERE a.\"group\" = $1 AND a.model = $2 AND a.enabled = TRUE AND c.status = 1 \
+             ORDER BY a.priority DESC, c.id"
+        );
+        let rows: Vec<ChannelRow> = sqlx::query_as(&sql)
+            .bind(group)
+            .bind(model)
+            .fetch_all(self.pool())
+            .await
+            .map_err(db_err)?;
+        Ok(rows.into_iter().map(ChannelRow::into_domain).collect())
     }
 
     async fn create(&self, channel: &Channel) -> AppResult<i64> {

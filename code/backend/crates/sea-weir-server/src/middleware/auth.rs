@@ -165,9 +165,173 @@ fn bearer_token(headers: &http::HeaderMap) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// 从请求中按优先级提取 sk-token。
-pub fn extract_sk_token(_headers: &http::HeaderMap, _query: &str) -> Option<String> {
-    todo!("按 5 个来源的优先级顺序提取")
+/// 从请求中按优先级提取 sk-token(CONTRACTS §1 TOKEN-MW)。
+///
+/// 顺序:`Authorization: Bearer sk-…` → `x-api-key`(Claude)→
+/// `x-goog-api-key` / `?key=`(Gemini)→ `Sec-WebSocket-Protocol`(realtime)→
+/// `mj-api-secret`(MJ)。
+pub fn extract_sk_token(headers: &http::HeaderMap, query: &str) -> Option<String> {
+    // 1. Authorization: Bearer sk-...
+    if let Some(value) = headers
+        .get(http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+    {
+        if let Some(token) = value.strip_prefix("Bearer ") {
+            let token = token.trim();
+            if token.starts_with("sk-") {
+                return Some(token.to_string());
+            }
+        }
+    }
+    // 2. x-api-key(Claude 路径)
+    if let Some(token) = header_token(headers, "x-api-key") {
+        return Some(token);
+    }
+    // 3. x-goog-api-key(Gemini 路径)
+    if let Some(token) = header_token(headers, "x-goog-api-key") {
+        return Some(token);
+    }
+    // 3'. ?key=(Gemini 路径)
+    for pair in query.split('&') {
+        if let Some(value) = pair.strip_prefix("key=") {
+            if !value.trim().is_empty() {
+                return Some(value.trim().to_string());
+            }
+        }
+    }
+    // 4. Sec-WebSocket-Protocol(realtime):形如 `realtime, openai-insecure-api-key.sk-xxx`
+    if let Some(value) = headers
+        .get("sec-websocket-protocol")
+        .and_then(|v| v.to_str().ok())
+    {
+        for part in value.split(',') {
+            let part = part.trim();
+            if let Some(token) = part.strip_prefix("openai-insecure-api-key.") {
+                return Some(token.to_string());
+            }
+        }
+    }
+    // 5. mj-api-secret(MJ 路径)
+    if let Some(value) = header_token(headers, "mj-api-secret") {
+        return Some(value.strip_prefix("Bearer ").unwrap_or(&value).trim().to_string());
+    }
+    None
+}
+
+fn header_token(headers: &http::HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// 中继面令牌鉴权提取器:sk-token → [`AuthToken`] 上下文。
+///
+/// 校验:令牌存在且 `status=1`、未过期(`-1` 或 > now)、非无限额度时额度 > 0、
+/// 归属用户未禁用。`sk-xxx-{channelId}` 后缀指定渠道仅 admin/root 可用。
+pub struct TokenAuth(pub AuthToken);
+
+impl FromRequestParts<std::sync::Arc<ServerState>> for TokenAuth {
+    type Rejection = axum::response::Response;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &std::sync::Arc<ServerState>,
+    ) -> Result<Self, Self::Rejection> {
+        use sea_weir_types::constants::{status, token_status};
+
+        let reject = |msg: &str| {
+            Err(response::relay_err(
+                AppError::Unauthorized(msg.to_string()).into(),
+                sea_weir_types::RelayFormat::OpenAi,
+            ))
+        };
+
+        let query = parts.uri.query().unwrap_or("");
+        let Some(raw) = extract_sk_token(&parts.headers, query) else {
+            return reject("缺少 API 密钥");
+        };
+        // 客户端携带的 `sk-` 前缀不入库,查库前剥离。
+        let raw = raw.strip_prefix("sk-").unwrap_or(&raw);
+        // `-{channelId}` 后缀:指定渠道。
+        let (key, specific_channel_id) = split_specific_channel(raw);
+
+        let tokens = state
+            .tokens
+            .as_ref()
+            .ok_or_else(|| response::err(AppError::Database("数据库未连接".into())))?;
+        let token = tokens
+            .find_by_key(key)
+            .await
+            .map_err(response::err)?
+            .ok_or_else(|| AppError::Unauthorized("API 密钥无效".into()))
+            .map_err(|e| {
+                response::relay_err(e.into(), sea_weir_types::RelayFormat::OpenAi)
+            })?;
+
+        if token.status != token_status::ENABLED {
+            return reject("API 密钥已禁用");
+        }
+        let now = chrono::Utc::now().timestamp();
+        if token.expired_time != -1 && token.expired_time <= now {
+            return reject("API 密钥已过期");
+        }
+        if !token.unlimited_quota && token.remain_quota <= 0 {
+            return reject("API 密钥额度已用尽");
+        }
+
+        let users = state
+            .users
+            .as_ref()
+            .ok_or_else(|| response::err(AppError::Database("数据库未连接".into())))?;
+        let user = users
+            .find_by_id(token.user_id)
+            .await
+            .map_err(response::err)?
+            .ok_or_else(|| AppError::Unauthorized("用户不存在".into()))
+            .map_err(|e| {
+                response::relay_err(e.into(), sea_weir_types::RelayFormat::OpenAi)
+            })?;
+        if !user.is_enabled() {
+            return reject("用户已被封禁");
+        }
+        if specific_channel_id.is_some() && user.role < role::ADMIN {
+            return Err(response::relay_err(
+                AppError::Forbidden("普通用户不支持指定渠道".into()).into(),
+                sea_weir_types::RelayFormat::OpenAi,
+            ));
+        }
+
+        let group = if token.group.trim().is_empty() {
+            user.group.clone()
+        } else {
+            token.group.clone()
+        };
+        let _ = status::ENABLED;
+
+        Ok(TokenAuth(AuthToken {
+            token_id: token.id,
+            user_id: token.user_id,
+            group,
+            model_limits: None,
+            remain_quota: token.remain_quota,
+            unlimited_quota: token.unlimited_quota,
+            specific_channel_id,
+        }))
+    }
+}
+
+/// 解析 `sk-xxx-{channelId}` 后缀 → (key, Option<channelId>)。
+fn split_specific_channel(raw: &str) -> (&str, Option<i64>) {
+    if let Some((head, tail)) = raw.rsplit_once('-') {
+        if !head.is_empty() {
+            if let Ok(id) = tail.parse::<i64>() {
+                return (head, Some(id));
+            }
+        }
+    }
+    (raw, None)
 }
 
 /// 角色闸门。
@@ -250,5 +414,34 @@ mod tests {
         assert!(ensure_role(&auth_user(role::ADMIN), role::ADMIN).is_ok());
         assert!(ensure_role(&auth_user(role::ROOT), role::ROOT).is_ok());
         assert!(ensure_role(&auth_user(role::COMMON), role::COMMON).is_ok());
+    }
+
+    #[test]
+    fn sk_token_authorization_beats_other_sources() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            http::header::AUTHORIZATION,
+            "Bearer sk-from-header".parse().unwrap(),
+        );
+        headers.insert("x-api-key", "from-x-api-key".parse().unwrap());
+        assert_eq!(
+            extract_sk_token(&headers, "key=from-query").as_deref(),
+            Some("sk-from-header")
+        );
+    }
+
+    #[test]
+    fn sk_token_falls_back_to_query_key() {
+        let headers = http::HeaderMap::new();
+        assert_eq!(
+            extract_sk_token(&headers, "stream=true&key=plain-key").as_deref(),
+            Some("plain-key")
+        );
+    }
+
+    #[test]
+    fn sk_token_specific_channel_suffix() {
+        assert_eq!(split_specific_channel("abc123-42"), ("abc123", Some(42)));
+        assert_eq!(split_specific_channel("abc123"), ("abc123", None));
     }
 }
