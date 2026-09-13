@@ -8,6 +8,12 @@ pub trait ChannelRepository: Send + Sync {
     async fn list_enabled(&self) -> AppResult<Vec<Channel>>;
     async fn find_by_id(&self, id: i64) -> AppResult<Option<Channel>>;
 
+    /// 管理面分页列表(不限状态)。key 由上层脱敏。
+    async fn list_paged(&self, offset: i64, limit: i64) -> AppResult<Vec<Channel>>;
+    async fn count(&self) -> AppResult<i64>;
+    /// 渠道名是否已存在(创建前置校验)。
+    async fn exists_name(&self, name: &str) -> AppResult<bool>;
+
     async fn create(&self, channel: &Channel) -> AppResult<i64>;
     async fn update(&self, channel: &Channel) -> AppResult<()>;
     async fn delete(&self, id: i64) -> AppResult<()>;
