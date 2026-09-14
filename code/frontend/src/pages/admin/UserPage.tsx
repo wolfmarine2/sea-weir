@@ -22,6 +22,7 @@ import type { TableColumnsType } from 'antd';
 import dayjs from 'dayjs';
 
 import { api } from '@/api';
+import type { CreateUserPayload } from '@/api/modules/user';
 import { DataTable } from '@/components/table';
 import { useTableData } from '@/hooks';
 import type { User } from '@/types';
@@ -63,6 +64,8 @@ export default function UserPage() {
   const [createForm] = Form.useForm<CreateForm>();
   const [editForm] = Form.useForm<EditForm>();
   const [createOpen, setCreateOpen] = useState(false);
+  const [batchOpen, setBatchOpen] = useState(false);
+  const [batchText, setBatchText] = useState('');
   const [editOpen, setEditOpen] = useState(false);
   const [editing, setEditing] = useState<User | null>(null);
   const [saving, setSaving] = useState(false);
@@ -124,6 +127,55 @@ export default function UserPage() {
     }
   };
 
+  /** 解析批量导入文本:每行 `用户名,口令[,角色[,显示名[,分组]]]`。 */
+  const parseBatch = (text: string): CreateUserPayload[] => {
+    const users: CreateUserPayload[] = [];
+    for (const raw of text.split('\n')) {
+      const line = raw.trim();
+      if (line === '' || line.startsWith('#')) continue;
+      const [username, password, role, display_name, group] = line
+        .split(',')
+        .map((s) => s.trim());
+      if (!username || !password) continue;
+      users.push({
+        username,
+        password,
+        role: role ? Number(role) : undefined,
+        display_name: display_name || undefined,
+        group: group || undefined,
+      });
+    }
+    return users;
+  };
+
+  const onBatchImport = async () => {
+    const users = parseBatch(batchText);
+    if (users.length === 0) {
+      message.warning('没有解析到有效行(格式:用户名,口令[,角色[,显示名[,分组]]])');
+      return;
+    }
+    setSaving(true);
+    try {
+      const r = await api.user.batchCreateUsers(users);
+      if (r.failed === 0) {
+        message.success(`已创建 ${r.created} 个用户`);
+      } else {
+        const detail = r.results
+          .filter((x) => !x.ok)
+          .map((x) => `${x.username}:${x.error ?? '失败'}`)
+          .join(';');
+        message.warning(`成功 ${r.created},失败 ${r.failed} —— ${detail}`);
+      }
+      setBatchOpen(false);
+      setBatchText('');
+      table.refresh();
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : '批量导入失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const columns: TableColumnsType<User> = [
     { title: 'ID', dataIndex: 'id', width: 70 },
     { title: '用户名', dataIndex: 'username' },
@@ -173,9 +225,12 @@ export default function UserPage() {
     <Card
       title={<Typography.Text strong>用户</Typography.Text>}
       extra={
-        <Button type="primary" onClick={() => setCreateOpen(true)}>
-          创建用户
-        </Button>
+        <Space>
+          <Button onClick={() => setBatchOpen(true)}>批量导入</Button>
+          <Button type="primary" onClick={() => setCreateOpen(true)}>
+            创建用户
+          </Button>
+        </Space>
       }
     >
       <DataTable<User>
@@ -220,6 +275,27 @@ export default function UserPage() {
             <Input placeholder="default" />
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title="批量导入用户"
+        open={batchOpen}
+        onCancel={() => setBatchOpen(false)}
+        onOk={() => void onBatchImport()}
+        confirmLoading={saving}
+        width={640}
+        destroyOnClose
+      >
+        <Typography.Paragraph type="secondary">
+          每行一个用户,格式:<Typography.Text code>用户名,口令[,角色[,显示名[,分组]]]</Typography.Text>
+          ;以 # 开头的行忽略。角色取 0/1/10/100,缺省 1(common)。单次最多 200 条。
+        </Typography.Paragraph>
+        <Input.TextArea
+          rows={10}
+          value={batchText}
+          onChange={(e) => setBatchText(e.target.value)}
+          placeholder={'alice,alice123\nbob,bob123,10,运维,vip'}
+        />
       </Modal>
 
       <Modal

@@ -231,6 +231,7 @@ fn build_router(state: Arc<ServerState>) -> Router {
                 .post(handlers::user::admin_create)
                 .put(handlers::user::admin_update),
         )
+        .route("/api/user/batch", post(handlers::user::admin_batch_create))
         .route(
             "/api/user",
             get(handlers::user::admin_list).put(handlers::user::admin_update),

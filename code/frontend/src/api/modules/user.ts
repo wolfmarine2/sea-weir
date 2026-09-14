@@ -58,3 +58,21 @@ export function updateUser(payload: UpdateUserPayload): Promise<User> {
 export function deleteUser(id: number): Promise<unknown> {
   return request<unknown>({ url: `/api/user/${id}`, method: 'delete' });
 }
+
+export interface BatchUserResult {
+  username: string;
+  ok: boolean;
+  id?: number;
+  error?: string;
+}
+
+export interface BatchCreateResult {
+  created: number;
+  failed: number;
+  results: BatchUserResult[];
+}
+
+/** `POST /api/user/batch`(AdminAuth):批量创建用户(逐条处理,单条失败不影响其他)。 */
+export function batchCreateUsers(users: CreateUserPayload[]): Promise<BatchCreateResult> {
+  return request<BatchCreateResult>({ url: '/api/user/batch', method: 'post', data: { users } });
+}

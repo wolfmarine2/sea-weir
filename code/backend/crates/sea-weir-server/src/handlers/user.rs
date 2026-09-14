@@ -386,3 +386,133 @@ pub async fn admin_delete(
         Err(e) => response::err(e),
     }
 }
+
+// ───────────────────────── 管理面:批量创建用户(AdminAuth)─────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct BatchUserItem {
+    pub username: String,
+    pub password: String,
+    #[serde(default)]
+    pub role: Option<i32>,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub group: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BatchCreateRequest {
+    pub users: Vec<BatchUserItem>,
+}
+
+/// 单次批量上限(防止误操作一次灌入过多)。
+const BATCH_LIMIT: usize = 200;
+
+/// `POST /api/user/batch`(AdminAuth):批量创建用户(内部账号由管理员添加/外部同步)。
+///
+/// 逐条处理,单条失败不影响其他;返回 `{created, failed, results:[{username, ok, id?, error?}]}`。
+pub async fn admin_batch_create(
+    State(state): State<Arc<ServerState>>,
+    AdminUser(actor): AdminUser,
+    Json(req): Json<BatchCreateRequest>,
+) -> Response {
+    let repo = match user_repo(&state) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    if req.users.is_empty() {
+        return response::err(AppError::BadRequest("users 不能为空".into()));
+    }
+    if req.users.len() > BATCH_LIMIT {
+        return response::err(AppError::BadRequest(format!(
+            "单次最多创建 {BATCH_LIMIT} 个用户"
+        )));
+    }
+
+    let mut results = Vec::with_capacity(req.users.len());
+    let mut created = 0usize;
+    let mut failed = 0usize;
+
+    for item in req.users {
+        let username = item.username.trim().to_string();
+        let fail = |reason: String| {
+            serde_json::json!({"username": username, "ok": false, "error": reason})
+        };
+
+        if username.is_empty() {
+            failed += 1;
+            results.push(fail("用户名不能为空".into()));
+            continue;
+        }
+        if item.password.len() < 6 {
+            failed += 1;
+            results.push(fail("口令至少 6 位".into()));
+            continue;
+        }
+        let role_value = item.role.unwrap_or(role::COMMON);
+        if !role::is_valid(role_value) {
+            failed += 1;
+            results.push(fail("角色取值非法".into()));
+            continue;
+        }
+        if role_value >= role::ROOT && actor.role < role::ROOT {
+            failed += 1;
+            results.push(fail("仅 root 可创建 root 账号".into()));
+            continue;
+        }
+        match repo.exists_username(&username).await {
+            Ok(true) => {
+                failed += 1;
+                results.push(fail("用户名已存在".into()));
+                continue;
+            }
+            Ok(false) => {}
+            Err(e) => {
+                failed += 1;
+                results.push(fail(e.to_string()));
+                continue;
+            }
+        }
+
+        let hash = match bcrypt::hash(&item.password, bcrypt::DEFAULT_COST) {
+            Ok(h) => h,
+            Err(e) => {
+                failed += 1;
+                results.push(fail(format!("口令哈希失败: {e}")));
+                continue;
+            }
+        };
+        let aff = uuid::Uuid::new_v4().simple().to_string()[..16].to_string();
+        match repo.create(&username, &hash, role_value, &aff).await {
+            Ok(id) => {
+                // create() 默认 display_name=username、group=default;请求带了的再覆盖。
+                let display = item.display_name.filter(|s| !s.trim().is_empty());
+                let group = item.group.filter(|s| !s.trim().is_empty());
+                if display.is_some() || group.is_some() {
+                    let _ = repo
+                        .update_admin_fields(
+                            id,
+                            role_value,
+                            1,
+                            display.as_deref().unwrap_or(&username),
+                            group.as_deref().unwrap_or("default"),
+                        )
+                        .await;
+                }
+                created += 1;
+                results.push(serde_json::json!({"username": username, "ok": true, "id": id}));
+            }
+            Err(e) => {
+                failed += 1;
+                results.push(fail(e.to_string()));
+            }
+        }
+    }
+
+    response::ok(serde_json::json!({
+        "created": created,
+        "failed": failed,
+        "results": results,
+    }))
+}
