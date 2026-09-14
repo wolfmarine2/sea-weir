@@ -145,12 +145,13 @@ impl crate::traits::LogRepository for PgLogRepository {
     async fn record(&self, log: &Log) -> AppResult<()> {
         let now = chrono::Utc::now().timestamp();
         let created_at = if log.created_at > 0 { log.created_at } else { now };
+        // 显式列出全部 NOT NULL 列(含 request_body / response_body),不依赖列默认值。
         sqlx::query(
             r#"INSERT INTO logs
                  (user_id, created_at, type, content, username, token_name, model_name, quota,
                   prompt_tokens, completion_tokens, use_time, is_stream, channel_id, token_id,
-                  "group", ip, request_id, other)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)"#,
+                  "group", ip, request_id, other, request_body, response_body)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,'','')"#,
         )
         .bind(log.user_id)
         .bind(created_at)

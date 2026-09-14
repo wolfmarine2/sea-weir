@@ -309,11 +309,20 @@ impl crate::traits::UserRepository for PgUserRepository {
         aff_code: &str,
     ) -> AppResult<i64> {
         let now = chrono::Utc::now().timestamp();
+        // 显式列出全部 NOT NULL 列,不依赖列默认值 —— 兼容由早期 DDL 建出的表
+        // (那些表可能没有 DEFAULT,省略列会触发 "null value ... violates not-null")。
         let (id,): (i64,) = sqlx::query_as(
             r#"INSERT INTO users
-                 (username, password, display_name, role, status, aff_code,
-                  "group", quota, used_quota, request_count, created_at, last_login_at)
-               VALUES ($1, $2, $1, $3, 1, $4, 'default', 0, 0, 0, $5, 0)
+                 (username, password, display_name, role, status, email,
+                  github_id, discord_id, oidc_id, wechat_id, telegram_id, linux_do_id,
+                  aff_code, aff_count, aff_quota, aff_history_quota, inviter_id,
+                  "group", quota, used_quota, request_count, stripe_customer, remark,
+                  created_at, last_login_at)
+               VALUES ($1, $2, $1, $3, 1, '',
+                       '', '', '', '', '', '',
+                       $4, 0, 0, 0, 0,
+                       'default', 0, 0, 0, '', '',
+                       $5, 0)
                RETURNING id"#,
         )
         .bind(username)

@@ -206,15 +206,16 @@ impl crate::traits::ChannelRepository for PgChannelRepository {
 
     async fn create(&self, channel: &Channel) -> AppResult<i64> {
         let now = chrono::Utc::now().timestamp();
+        // 显式列出全部 NOT NULL 列(含 other / remark),不依赖列默认值。
         let (id,): (i64,) = sqlx::query_as(
             r#"INSERT INTO channels
                  (type, key, openai_organization, test_model, status, name, weight, created_time,
                   test_time, response_time, base_url, balance, balance_updated_time, models,
                   "group", used_quota, model_mapping, status_code_mapping, priority, auto_ban,
                   other_info, tag, setting, param_override, header_override, channel_info,
-                  settings, created_at, updated_at)
+                  settings, other, remark, created_at, updated_at)
                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-                       $21,$22,$23,$24,$25,$26,$27,$28,$28)
+                       $21,$22,$23,$24,$25,$26,$27,'','',$28,$28)
                RETURNING id"#,
         )
         .bind(channel.r#type as i64)
