@@ -39,15 +39,16 @@ impl DbPools {
         Ok(Self { main, log })
     }
 
-    /// 启动时执行 sqlx migrations。
+    /// 启动时执行 sqlx migrations(`code/backend/migrations/`)。
     ///
-    /// 现状:`migrations/` 目录目前只有 README,权威 DDL 在 `data/ddl.sql`
-    /// (由数据阶段脚本 `data/cicd.sh` 应用),尚无 `{timestamp}_*.sql` 迁移文件,
-    /// 故此处为 no-op。补齐迁移文件后改为 `sqlx::migrate!("../../migrations").run(&self.main)`。
+    /// `0001_init.sql` 是 `data/ddl.sql` 的镜像(幂等 DDL),因此对已手工建过表的库
+    /// 重复执行也安全;对空库则自动建表,无需额外的 data 阶段。
     pub async fn migrate(&self) -> AppResult<()> {
-        tracing::warn!(
-            "未执行 sqlx migrations:仓库暂无迁移文件,建表由 data 阶段脚本负责(data/cicd.sh)"
-        );
+        sqlx::migrate!("../../migrations")
+            .run(&self.main)
+            .await
+            .map_err(|e| AppError::Database(format!("migrations 执行失败: {e}")))?;
+        tracing::info!("sqlx migrations 执行完成");
         Ok(())
     }
 }

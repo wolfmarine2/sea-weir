@@ -159,7 +159,12 @@ async fn connect_repositories(
     };
 
     if let Err(e) = pools.migrate().await {
-        tracing::warn!(error = %e, "migrations 执行失败(继续启动)");
+        // 建表失败会让后续所有端点不可用(如 relation "users" does not exist),
+        // 因此这里按 error 级别提示,并给出排查方向。
+        tracing::error!(
+            error = %e,
+            "sqlx migrations 执行失败:数据库可能不可写或权限不足;请检查 DATABASE_DSN 与 openGauss 权限"
+        );
     }
     tracing::info!("数据库连接池就绪");
 
