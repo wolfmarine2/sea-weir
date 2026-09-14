@@ -47,6 +47,106 @@ enum UpstreamOutcome {
     Json(serde_json::Value),
 }
 
+/// 按点分路径设置值(中间缺失则创建对象;路径含数组下标不支持)。
+fn set_path(root: &mut serde_json::Value, path: &str, value: serde_json::Value) {
+    let parts: Vec<&str> = path.split('.').filter(|s| !s.is_empty()).collect();
+    if parts.is_empty() {
+        return;
+    }
+    let mut current = root;
+    for part in &parts[..parts.len() - 1] {
+        if !current.is_object() {
+            *current = serde_json::json!({});
+        }
+        let entry = current
+            .as_object_mut()
+            .expect("上面已保证是 object")
+            .entry((*part).to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        // 中间层若是标量,覆盖为对象以保证路径可写。
+        if !entry.is_object() {
+            *entry = serde_json::json!({});
+        }
+        current = entry;
+    }
+    if let Some(obj) = current.as_object_mut() {
+        obj.insert(parts[parts.len() - 1].to_string(), value);
+    }
+}
+
+/// 按点分路径删除值(不存在则忽略)。
+fn delete_path(root: &mut serde_json::Value, path: &str) {
+    let parts: Vec<&str> = path.split('.').filter(|s| !s.is_empty()).collect();
+    if parts.is_empty() {
+        return;
+    }
+    let mut current = root;
+    for part in &parts[..parts.len() - 1] {
+        match current.get_mut(part) {
+            Some(next) => current = next,
+            None => return,
+        }
+    }
+    if let Some(obj) = current.as_object_mut() {
+        obj.remove(parts[parts.len() - 1]);
+    }
+}
+
+/// 应用渠道级请求参数改写。
+///
+/// 支持两种形态:
+/// - 新式:`{"operations":[{"mode":"set"|"delete","path":"max_tokens","value":123}]}`
+/// - 简式:`{"max_tokens": 123, "stream": null}`(null 表示删除该字段)
+pub fn apply_param_override(body: &mut serde_json::Value, override_: &serde_json::Value) {
+    if let Some(ops) = override_.get("operations").and_then(|v| v.as_array()) {
+        for op in ops {
+            let path = op.get("path").and_then(|p| p.as_str()).unwrap_or("");
+            if path.is_empty() {
+                continue;
+            }
+            match op.get("mode").and_then(|m| m.as_str()).unwrap_or("set") {
+                "delete" => delete_path(body, path),
+                _ => {
+                    if let Some(value) = op.get("value") {
+                        if !value.is_null() {
+                            set_path(body, path, value.clone());
+                        }
+                    }
+                }
+            }
+        }
+        return;
+    }
+
+    if let Some(map) = override_.as_object() {
+        for (path, value) in map {
+            if value.is_null() {
+                delete_path(body, path);
+            } else {
+                set_path(body, path, value.clone());
+            }
+        }
+    }
+}
+
+/// 应用渠道级 header 改写;值中的 `{api_key}` 占位替换为渠道密钥。
+fn apply_header_override(
+    request: reqwest::RequestBuilder,
+    header_override: Option<&serde_json::Value>,
+    api_key: &str,
+) -> reqwest::RequestBuilder {
+    let Some(map) = header_override.and_then(|v| v.as_object()) else {
+        return request;
+    };
+    let mut request = request;
+    for (name, value) in map {
+        if let Some(text) = value.as_str() {
+            request = request.header(name.as_str(), text.replace("{api_key}", api_key));
+        }
+    }
+    request
+}
+
 /// 发起一次上游调用。错误统一归一化为 `NewApiError`(供重试/自动禁用判定)。
 async fn forward_once(
     http: &reqwest::Client,
@@ -54,12 +154,16 @@ async fn forward_once(
     key: &str,
     body: &serde_json::Value,
     is_stream: bool,
+    header_override: Option<&serde_json::Value>,
 ) -> Result<UpstreamOutcome, NewApiError> {
-    let resp = http
+    let request = http
         .post(url)
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::AUTHORIZATION, format!("Bearer {key}"))
-        .json(body)
+        .json(body);
+    let request = apply_header_override(request, header_override, key);
+
+    let resp = request
         .send()
         .await
         .map_err(|e| channel_err("channel:request_failed", &format!("上游请求失败: {e}"), 502))?;
@@ -284,8 +388,24 @@ async fn run_relay(
             obj.insert("model".into(), serde_json::json!(upstream_model));
         }
 
+        // 渠道级参数改写(在模型映射之后应用,可覆盖 model 等字段);
+        // 每次尝试都从转换后的原始体复制一份,避免重试时重复叠加。
+        let mut attempt_body = upstream_body.clone();
+        if let Some(over) = channel.param_override.as_ref() {
+            apply_param_override(&mut attempt_body, over);
+        }
+
         let url = upstream_url(base_url, "/v1/chat/completions");
-        match forward_once(&state.http, &url, &channel_key, &upstream_body, is_stream).await {
+        match forward_once(
+            &state.http,
+            &url,
+            &channel_key,
+            &attempt_body,
+            is_stream,
+            channel.header_override.as_ref(),
+        )
+        .await
+        {
             Ok(UpstreamOutcome::Stream(resp)) => {
                 if entry == RelayFormat::Claude {
                     return claude_stream_response(
@@ -729,5 +849,49 @@ pub async fn get_model(
             RelayFormat::OpenAi,
         ),
         Err(e) => relay_fail(e, RelayFormat::OpenAi),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn param_override_plain_set_and_delete() {
+        let mut body = json!({"model": "gpt-4o", "stream": false, "extra": 1});
+        apply_param_override(&mut body, &json!({"max_tokens": 4096, "stream": null}));
+        assert_eq!(body["max_tokens"], json!(4096));
+        assert!(body.get("stream").is_none(), "null 表示删除字段");
+        assert_eq!(body["extra"], json!(1), "未涉及的字段保持不变");
+    }
+
+    #[test]
+    fn param_override_nested_path() {
+        let mut body = json!({"a": {"b": 1}});
+        apply_param_override(&mut body, &json!({"a.b.c": "x"}));
+        assert_eq!(body["a"]["b"]["c"], json!("x"));
+        assert_eq!(body["a"]["b"] , json!({"c": "x"}), "嵌套覆盖中间层为对象");
+    }
+
+    #[test]
+    fn param_override_operations_form() {
+        let mut body = json!({"temperature": 1, "top_p": 1});
+        apply_param_override(
+            &mut body,
+            &json!({"operations": [
+                {"mode": "set", "path": "temperature", "value": 0.2},
+                {"mode": "delete", "path": "top_p"}
+            ]}),
+        );
+        assert_eq!(body["temperature"], json!(0.2));
+        assert!(body.get("top_p").is_none());
+    }
+
+    #[test]
+    fn param_override_ignores_non_object() {
+        let mut body = json!({"model": "gpt-4o"});
+        apply_param_override(&mut body, &json!("not-an-object"));
+        assert_eq!(body, json!({"model": "gpt-4o"}));
     }
 }
