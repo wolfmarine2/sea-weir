@@ -32,6 +32,7 @@ export default function AppLayout() {
     { key: '/console/token', label: <Link to="/console/token">令牌</Link> },
     { key: '/console/log', label: <Link to="/console/log">日志</Link> },
     { key: '/console/dashboard', label: <Link to="/console/dashboard">看板</Link> },
+    { key: '/pricing', label: <Link to="/pricing">模型广场</Link> },
     ...(role >= ROLE.ADMIN
       ? [
           { key: '/admin/channel', label: <Link to="/admin/channel">渠道</Link> },

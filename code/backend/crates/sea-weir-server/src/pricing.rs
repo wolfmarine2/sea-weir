@@ -114,24 +114,46 @@ impl PricingView {
 
     /// 快照(供 `/api/ratio_config` 输出)。
     pub fn snapshot(&self) -> serde_json::Value {
-        let dump = |m: &HashMap<String, Decimal>| {
-            serde_json::to_value(m.iter().map(|(k, v)| (k.clone(), v.to_string())).collect::<HashMap<_, _>>())
-                .unwrap_or(serde_json::Value::Null)
-        };
         serde_json::json!({
-            "model_ratio": dump(&self.model_ratio),
-            "group_ratio": dump(&self.group_ratio),
-            "completion_ratio": dump(&self.completion_ratio),
-            "cache_ratio": dump(&self.cache_ratio),
-            "cache_creation_ratio": dump(&self.create_cache_ratio),
-            "cache_creation_5m_ratio": dump(&self.creation_5m_ratio),
-            "cache_creation_1h_ratio": dump(&self.creation_1h_ratio),
-            "image_ratio": dump(&self.image_ratio),
-            "audio_ratio": dump(&self.audio_ratio),
-            "audio_input_price": dump(&self.audio_input_price),
-            "model_price": dump(&self.model_price),
+            "model_ratio": dump_map(&self.model_ratio),
+            "group_ratio": dump_map(&self.group_ratio),
+            "completion_ratio": dump_map(&self.completion_ratio),
+            "cache_ratio": dump_map(&self.cache_ratio),
+            "cache_creation_ratio": dump_map(&self.create_cache_ratio),
+            "cache_creation_5m_ratio": dump_map(&self.creation_5m_ratio),
+            "cache_creation_1h_ratio": dump_map(&self.creation_1h_ratio),
+            "image_ratio": dump_map(&self.image_ratio),
+            "audio_ratio": dump_map(&self.audio_ratio),
+            "audio_input_price": dump_map(&self.audio_input_price),
+            "model_price": dump_map(&self.model_price),
         })
     }
+
+    /// 模型广场的单行(默认分组下的倍率)。
+    pub fn model_row(&self, model: &str) -> serde_json::Value {
+        let price = self.price_for(model, "default");
+        serde_json::json!({
+            "model_name": model,
+            "model_ratio": price.model_ratio.to_string(),
+            "completion_ratio": price.completion_ratio.to_string(),
+            "cache_ratio": price.cache_ratio.to_string(),
+            "model_price": price.model_price.map(|d| d.to_string()),
+        })
+    }
+
+    /// 分组倍率表。
+    pub fn group_ratio_map(&self) -> serde_json::Value {
+        dump_map(&self.group_ratio)
+    }
+}
+
+fn dump_map(map: &HashMap<String, Decimal>) -> serde_json::Value {
+    serde_json::to_value(
+        map.iter()
+            .map(|(k, v)| (k.clone(), v.to_string()))
+            .collect::<HashMap<_, _>>(),
+    )
+    .unwrap_or(serde_json::Value::Null)
 }
 
 /// 定价视图缓存(读多写少,60s TTL;取不到 options 时退化为全 1)。

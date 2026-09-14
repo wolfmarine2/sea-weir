@@ -23,6 +23,7 @@ import LogPage from '@/pages/console/LogPage';
 import TokenPage from '@/pages/console/TokenPage';
 import Home from '@/pages/public/Home';
 import NotFound from '@/pages/public/NotFound';
+import Pricing from '@/pages/pricing/Pricing';
 import Setup from '@/pages/setup/Setup';
 import { useUserStore } from '@/stores/user';
 
@@ -56,6 +57,8 @@ export const router = createBrowserRouter([
           </RequireRole>
         ),
       },
+      // 模型广场:公开(可匿名)
+      { path: 'pricing', element: <Pricing /> },
       {
         path: 'admin/channel',
         element: (

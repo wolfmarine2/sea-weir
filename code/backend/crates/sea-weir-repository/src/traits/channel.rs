@@ -20,6 +20,9 @@ pub trait ChannelRepository: Send + Sync {
     /// 某分组下可用的模型名(去重,来自启用中的 abilities)。
     async fn list_models_by_group(&self, group: &str) -> AppResult<Vec<String>>;
 
+    /// 全部可用模型名(去重;模型广场用,不区分分组)。
+    async fn list_all_models(&self) -> AppResult<Vec<String>>;
+
     async fn create(&self, channel: &Channel) -> AppResult<i64>;
     async fn update(&self, channel: &Channel) -> AppResult<()>;
     async fn delete(&self, id: i64) -> AppResult<()>;

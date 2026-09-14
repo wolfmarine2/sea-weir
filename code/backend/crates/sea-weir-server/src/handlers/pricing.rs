@@ -20,3 +20,22 @@ pub async fn ratio_config(State(state): State<Arc<ServerState>>) -> Response {
         .await;
     response::ok(view.snapshot())
 }
+
+/// `GET /api/pricing`(公开,可匿名):模型广场 —— 可用模型 + 各自倍率 + 分组倍率表。
+pub async fn pricing(State(state): State<Arc<ServerState>>) -> Response {
+    let models = match state.channels.as_ref() {
+        Some(channels) => channels.list_all_models().await.unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let view = state
+        .pricing
+        .get(state.options.as_ref().map(|o| o.as_ref()))
+        .await;
+    let rows: Vec<serde_json::Value> = models.iter().map(|m| view.model_row(m)).collect();
+
+    response::ok(serde_json::json!({
+        "models": rows,
+        "group_ratio": view.group_ratio_map(),
+        "quota_per_unit": sea_weir_types::constants::QUOTA_PER_UNIT,
+    }))
+}
