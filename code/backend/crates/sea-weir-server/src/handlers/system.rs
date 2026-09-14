@@ -51,8 +51,7 @@ pub async fn status(State(state): State<Arc<ServerState>>) -> Response {
 }
 
 /// `GET /api/setup`(公开):是否已完成首装。
-pub async fn get_setup(State(state): State<Arc<ServerState>>) -> Response {
-    let root_init = match state.users.as_ref() {
+pub async fn get_setup(State(state): State<Arc<ServerState>>) -> Response {    let root_init = match state.users.as_ref() {
         Some(users) => users
             .find_by_username("root")
             .await
@@ -110,4 +109,41 @@ pub async fn post_setup(
         Ok(id) => response::ok(serde_json::json!({ "id": id, "username": username })),
         Err(e) => response::err(e),
     }
+}
+
+// ───────────────────────── 运营文案(公开)─────────────────────────
+//
+// 与 new-api 一致:`data` 为字符串(可含 Markdown/HTML)。文案取自 options:
+// Notice / About / UserAgreement / PrivacyPolicy / HomePageContent。
+
+async fn text_option(state: &ServerState, key: &str) -> String {
+    match state.options.as_ref() {
+        Some(options) => options.get(key).await.ok().flatten().unwrap_or_default(),
+        None => String::new(),
+    }
+}
+
+/// `GET /api/notice`(公开):站内公告。
+pub async fn notice(State(state): State<Arc<ServerState>>) -> Response {
+    response::ok(text_option(&state, "Notice").await)
+}
+
+/// `GET /api/about`(公开):关于页文案。
+pub async fn about(State(state): State<Arc<ServerState>>) -> Response {
+    response::ok(text_option(&state, "About").await)
+}
+
+/// `GET /api/user-agreement`(公开):用户协议。
+pub async fn user_agreement(State(state): State<Arc<ServerState>>) -> Response {
+    response::ok(text_option(&state, "UserAgreement").await)
+}
+
+/// `GET /api/privacy-policy`(公开):隐私政策。
+pub async fn privacy_policy(State(state): State<Arc<ServerState>>) -> Response {
+    response::ok(text_option(&state, "PrivacyPolicy").await)
+}
+
+/// `GET /api/home_page_content`(公开):首页运营文案。
+pub async fn home_page_content(State(state): State<Arc<ServerState>>) -> Response {
+    response::ok(text_option(&state, "HomePageContent").await)
 }

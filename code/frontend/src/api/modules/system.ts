@@ -23,3 +23,8 @@ export function postSetup(payload: {
     data: payload,
   });
 }
+
+/** `GET /api/notice`(公开):站内公告文案(字符串,可含 Markdown/HTML)。 */
+export function getNotice(): Promise<string> {
+  return request<string>({ url: '/api/notice', method: 'get' });
+}

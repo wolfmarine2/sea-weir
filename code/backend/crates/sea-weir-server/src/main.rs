@@ -210,6 +210,15 @@ fn build_router(state: Arc<ServerState>) -> Router {
             "/api/setup",
             get(handlers::system::get_setup).post(handlers::system::post_setup),
         )
+        // 运营文案(公开)
+        .route("/api/notice", get(handlers::system::notice))
+        .route("/api/about", get(handlers::system::about))
+        .route("/api/user-agreement", get(handlers::system::user_agreement))
+        .route("/api/privacy-policy", get(handlers::system::privacy_policy))
+        .route(
+            "/api/home_page_content",
+            get(handlers::system::home_page_content),
+        )
         // 认证
         .route("/api/user/login", post(handlers::user::login))
         .route("/api/user/logout", get(handlers::user::logout))
