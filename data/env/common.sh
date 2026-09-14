@@ -93,11 +93,24 @@ ensure_database() {
         ok "数据库已存在"
         return 0
     fi
-    if psql_loose -d postgres -c "CREATE DATABASE \"${DB_NAME}\";" >/dev/null 2>&1; then
+    # openGauss 须 PG 兼容模式('A' 模式下 '' 等同 NULL);原生 PostgreSQL 不认该子句,回退普通建库
+    if psql_loose -d postgres -c "CREATE DATABASE \"${DB_NAME}\" DBCOMPATIBILITY 'PG';" >/dev/null 2>&1 \
+        || psql_loose -d postgres -c "CREATE DATABASE \"${DB_NAME}\";" >/dev/null 2>&1; then
         ok "数据库已创建: ${DB_NAME}"
     else
         warn "数据库 ${DB_NAME} 不存在且当前账号无权创建;请由 DBA 执行 data/00-init-database.sql"
     fi
+}
+
+# check_compatibility: 拒绝 Oracle 兼容模式库('' 被视为 NULL,写 NOT NULL 列会失败)
+check_compatibility() {
+    echo "[Step] 检查数据库兼容模式: ${DB_NAME}"
+    local empty_is_null
+    empty_is_null="$(psql_loose -tAc "SELECT '' IS NULL;" 2>/dev/null || true)"
+    if [ "$empty_is_null" = "t" ]; then
+        fail "数据库 ${DB_NAME} 为 Oracle 兼容模式('' 等同 NULL);请以 DBCOMPATIBILITY 'PG' 重建该库(见 data/00-init-database.sql)"
+    fi
+    ok "兼容模式正常(空串非 NULL)"
 }
 
 # apply_ddl: 幂等 DDL(仅 CREATE ... IF NOT EXISTS + COMMENT,无 DROP/TRUNCATE)

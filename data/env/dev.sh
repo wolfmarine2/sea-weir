@@ -12,6 +12,7 @@ echo "==> sea-weir 数据阶段:dev(重建业务数据,ENV=${NAMESPACE:-<未设�
 parse_db_params
 ensure_database
 check_db_connectivity
+check_compatibility
 apply_ddl
 truncate_business_tables
 apply_base_seed

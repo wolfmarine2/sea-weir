@@ -9,7 +9,9 @@
 -- 说明:
 --   - CREATE DATABASE 不能运行在事务块内,故用 psql 的 \gexec 按需执行;
 --   - 口令通过 psql 变量 :'app_password' 注入,不写入仓库;
---   - 角色/库名与 config 中 database.dsn 保持一致(默认 sea_weir)。
+--   - 角色/库名与 config 中 database.dsn 保持一致(默认 sea_weir);
+--   - 必须 DBCOMPATIBILITY 'PG':'A'(Oracle 兼容)模式下 '' 等同 NULL,写 NOT NULL 列会失败,
+--     且兼容模式建库后不可修改,已按 'A' 建的库需重建。
 -- =============================================================================
 
 \set ON_ERROR_STOP on
@@ -21,7 +23,7 @@ WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'sea_weir')
 \gexec
 
 -- 2. 业务库(存在则跳过)
-SELECT format('CREATE DATABASE sea_weir OWNER sea_weir ENCODING %L', 'UTF8')
+SELECT format('CREATE DATABASE sea_weir OWNER sea_weir ENCODING %L DBCOMPATIBILITY %L', 'UTF8', 'PG')
 FROM (VALUES (1)) AS one
 WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'sea_weir')
 \gexec

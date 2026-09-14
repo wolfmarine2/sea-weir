@@ -53,6 +53,7 @@ echo "==> sea-weir 本地一键初始化"
 parse_db_params
 ensure_database
 check_db_connectivity
+check_compatibility
 apply_ddl
 apply_base_seed
 

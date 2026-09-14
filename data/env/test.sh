@@ -13,6 +13,7 @@ echo "==> sea-weir 数据阶段:test(无损升级,ENV=${NAMESPACE:-<未设置>})
 parse_db_params
 ensure_database
 check_db_connectivity
+check_compatibility
 apply_ddl
 apply_base_seed
 

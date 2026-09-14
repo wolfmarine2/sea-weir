@@ -36,6 +36,11 @@ impl DbPools {
             }
         };
 
+        ensure_pg_empty_string(&main, "主库").await?;
+        if cfg.log_dsn.as_deref().map(str::trim).is_some_and(|s| !s.is_empty()) {
+            ensure_pg_empty_string(&log, "日志库").await?;
+        }
+
         Ok(Self { main, log })
     }
 
@@ -51,6 +56,24 @@ impl DbPools {
         tracing::info!("sqlx migrations 执行完成");
         Ok(())
     }
+}
+
+/// 校验库的空串语义。openGauss 以 `DBCOMPATIBILITY 'A'`(Oracle 兼容,默认值之一)建库时
+/// `''` 会被当作 NULL,所有写 `''` 的 NOT NULL 列都会报
+/// `null value in column ... violates not-null constraint`(如首装写 users.email)。
+/// 该属性建库后不可修改,只能在启动时拦下并提示重建库。
+async fn ensure_pg_empty_string(pool: &sqlx::PgPool, label: &str) -> AppResult<()> {
+    let (empty_is_null,): (bool,) = sqlx::query_as("SELECT '' IS NULL")
+        .fetch_one(pool)
+        .await
+        .map_err(|e| AppError::Database(format!("{label}兼容模式检测失败: {e}")))?;
+    if empty_is_null {
+        return Err(AppError::Database(format!(
+            "{label}为 Oracle 兼容模式(空串 '' 被视为 NULL),sea-weir 需要 PG 兼容模式;\
+             请以 `CREATE DATABASE <库名> DBCOMPATIBILITY 'PG'` 重建数据库(见 data/00-init-database.sql)"
+        )));
+    }
+    Ok(())
 }
 
 /// Repository 层共享上下文:连接池 + 缓存客户端。
