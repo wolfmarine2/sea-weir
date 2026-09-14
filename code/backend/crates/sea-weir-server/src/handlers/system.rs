@@ -33,10 +33,10 @@ pub async fn status(State(state): State<Arc<ServerState>>) -> Response {
             setup = v == "true" || v == "1";
         }
     }
-    // 首装与否以「是否存在 root 账号」为准。
+    // 首装与否以「是否已有账号」为准(首装账号用户名可自定义,不一定叫 root)。
     if let Some(users) = state.users.as_ref() {
-        if let Ok(Some(_)) = users.find_by_username("root").await {
-            setup = true;
+        if let Ok(n) = users.count().await {
+            setup = setup || n > 0;
         }
     }
 
@@ -51,12 +51,9 @@ pub async fn status(State(state): State<Arc<ServerState>>) -> Response {
 }
 
 /// `GET /api/setup`(公开):是否已完成首装。
-pub async fn get_setup(State(state): State<Arc<ServerState>>) -> Response {    let root_init = match state.users.as_ref() {
-        Some(users) => users
-            .find_by_username("root")
-            .await
-            .map(|u| u.is_some())
-            .unwrap_or(false),
+pub async fn get_setup(State(state): State<Arc<ServerState>>) -> Response {
+    let root_init = match state.users.as_ref() {
+        Some(users) => users.count().await.map(|n| n > 0).unwrap_or(false),
         None => false,
     };
 
@@ -83,9 +80,9 @@ pub async fn post_setup(
         None => return response::err(AppError::Database("数据库未连接".into())),
     };
 
-    match users.find_by_username("root").await {
-        Ok(Some(_)) => return response::err(AppError::Biz("系统已初始化".into())),
-        Ok(None) => {}
+    match users.count().await {
+        Ok(0) => {}
+        Ok(_) => return response::err(AppError::Biz("系统已初始化".into())),
         Err(e) => return response::err(e),
     }
 
