@@ -70,10 +70,11 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(version = env!("CARGO_PKG_VERSION"), started, "sea-weir-server 启动");
 
     // 4. 主库/日志库连接池 + 已实现的 Repository(数据库不可用时降级启动)
-    let (users, options, tokens, channels, logs) = connect_repositories(&config).await;
+    let cache = connect_cache(&config).await;
+    let (users, options, tokens, channels, logs) = connect_repositories(&config, cache.clone()).await;
 
-    // 5. Valkey 客户端 + pub/sub:TODO(TDD)。当前仅记录配置来源,未建立连接。
-    tracing::info!(cache_url = %config.cache.url, "缓存配置已加载(Valkey 客户端待接入)");
+    // 5. Valkey 客户端(不可用时降级:限流走内存窗口、会话吊销不可用)
+    // (连接已在第 4 步前完成,见 connect_cache)
 
     // 9. HTTP 服务
     let state = Arc::new(ServerState {
@@ -89,6 +90,7 @@ async fn main() -> anyhow::Result<()> {
             relay_rpm(),
             60,
         ),
+        cache,
         http: reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(600))
             .build()
@@ -108,9 +110,31 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 建立连接池并装配已实现的 Repository;不可用或未配置时返回 `(None, None, None)`。
+/// 连接 Valkey;失败返回 None(限流降级内存窗口,会话吊销不可用)。
+async fn connect_cache(
+    config: &AppConfig,
+) -> Option<sea_weir_repository::pool::cache_client::CacheClient> {
+    let url = config.cache.url.trim();
+    if url.is_empty() {
+        tracing::warn!("cache.url 未配置,缓存不可用");
+        return None;
+    }
+    match sea_weir_repository::pool::cache_client::CacheClient::connect(url).await {
+        Ok(client) => {
+            tracing::info!(cache_url = %url, "缓存(Valkey)连接就绪");
+            Some(client)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, cache_url = %url, "缓存不可用(降级:限流走内存窗口)");
+            None
+        }
+    }
+}
+
+/// 建立连接池并装配已实现的 Repository;不可用或未配置时返回 `(None, ...)`。
 async fn connect_repositories(
     config: &AppConfig,
+    cache: Option<sea_weir_repository::pool::cache_client::CacheClient>,
 ) -> (
     Option<Arc<dyn UserRepository>>,
     Option<Arc<dyn OptionRepository>>,
@@ -139,7 +163,7 @@ async fn connect_repositories(
 
     let ctx = Arc::new(RepositoryContext {
         pools,
-        cache: sea_weir_repository::pool::cache_client::CacheClient,
+        cache,
     });
     (
         Some(Arc::new(PgUserRepository::new(ctx.clone()))),

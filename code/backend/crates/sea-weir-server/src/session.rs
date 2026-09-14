@@ -64,6 +64,11 @@ impl SessionSigner {
     }
 }
 
+/// 会话吊销黑名单键(ADR-004:登出/改密/禁用 → 写 jti,TTL=剩余有效期)。
+pub fn revoke_key(jti: &str) -> String {
+    format!("sess:revoke:{jti}")
+}
+
 /// 构造 Set-Cookie 值。HttpOnly + SameSite=Strict(契约固定)。
 pub fn session_cookie(token: &str, max_age_secs: i64) -> String {
     format!("{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={max_age_secs}")

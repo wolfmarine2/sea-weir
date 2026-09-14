@@ -56,12 +56,97 @@ impl DbPools {
 /// 各 Repository 实现从中取用,避免逐个传参。
 pub struct RepositoryContext {
     pub pools: DbPools,
-    pub cache: cache_client::CacheClient,
+    /// Valkey 客户端;未配置/连接失败时为 None(读路径各自回源 DB)。
+    pub cache: Option<cache_client::CacheClient>,
 }
 
-/// 缓存客户端占位模块(TDD 阶段替换为 fred 具体类型)。
+/// Valkey(Redis 协议)客户端封装。
 pub mod cache_client {
-    pub struct CacheClient;
+    use fred::prelude::*;
+
+    /// 轻量封装:只暴露本项目需要的最小命令集。
+    #[derive(Clone)]
+    pub struct CacheClient {
+        inner: Client,
+    }
+
+    impl CacheClient {
+        pub async fn connect(url: &str) -> Result<Self, String> {
+            let config =
+                Config::from_url(url).map_err(|e| format!("cache url 解析失败: {e}"))?;
+            let client = Builder::from_config(config)
+                .build()
+                .map_err(|e| format!("cache 客户端构建失败: {e}"))?;
+            client
+                .init()
+                .await
+                .map_err(|e| format!("cache 连接失败: {e}"))?;
+            Ok(Self { inner: client })
+        }
+
+        pub async fn get(&self, key: &str) -> Result<Option<String>, String> {
+            self.inner
+                .get::<Option<String>, _>(key)
+                .await
+                .map_err(|e| e.to_string())
+        }
+
+        pub async fn set_ex(&self, key: &str, value: &str, ttl_secs: i64) -> Result<(), String> {
+            self.inner
+                .set::<(), _, _>(
+                    key,
+                    value,
+                    Some(Expiration::EX(ttl_secs.max(1))),
+                    None,
+                    false,
+                )
+                .await
+                .map_err(|e| e.to_string())
+        }
+
+        pub async fn del(&self, key: &str) -> Result<(), String> {
+            self.inner
+                .del::<i64, _>(key)
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        }
+
+        pub async fn incr(&self, key: &str) -> Result<i64, String> {
+            self.inner.incr::<i64, _>(key).await.map_err(|e| e.to_string())
+        }
+
+        pub async fn expire(&self, key: &str, secs: i64) -> Result<(), String> {
+            self.inner
+                .expire::<i64, _>(key, secs.max(1), None)
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        }
+
+        pub async fn ttl(&self, key: &str) -> Result<i64, String> {
+            self.inner.ttl::<i64, _>(key).await.map_err(|e| e.to_string())
+        }
+
+        /// 固定窗口限流(多副本一致)。
+        /// 返回 `Ok(Ok(()))` 放行;`Ok(Err(retry_after_secs))` 超限;`Err` 缓存故障。
+        pub async fn check_window(
+            &self,
+            key: &str,
+            limit: i64,
+            window_secs: i64,
+        ) -> Result<Result<(), i64>, String> {
+            let count = self.incr(key).await?;
+            if count == 1 {
+                self.expire(key, window_secs).await?;
+            }
+            if count > limit {
+                let ttl = self.ttl(key).await?;
+                return Ok(Err(if ttl > 0 { ttl } else { window_secs }));
+            }
+            Ok(Ok(()))
+        }
+    }
 }
 
 #[cfg(test)]

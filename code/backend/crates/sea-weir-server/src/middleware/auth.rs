@@ -62,6 +62,23 @@ impl axum::extract::FromRequestParts<std::sync::Arc<ServerState>> for AuthUser {
             crate::session::parse_cookie(&parts.headers, crate::session::SESSION_COOKIE)
         {
             let claims = state.sessions.verify(&token).map_err(response::err)?;
+            // 会话吊销检查(ADR-007:鉴权类路径 fail-close)。
+            if let Some(cache) = state.cache.as_ref() {
+                match cache.get(&crate::session::revoke_key(&claims.jti)).await {
+                    Ok(Some(_)) => {
+                        return Err(response::err(AppError::Unauthorized(
+                            "会话已吊销".into(),
+                        )));
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        tracing::warn!(error = %e, "会话吊销检查失败,fail-close");
+                        return Err(response::err(AppError::Unauthorized(
+                            "会话校验不可用".into(),
+                        )));
+                    }
+                }
+            }
             require_new_api_user(&parts.headers, claims.sub)?;
             users
                 .find_by_id(claims.sub)

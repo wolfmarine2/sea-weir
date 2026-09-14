@@ -49,6 +49,11 @@ impl SlidingWindowLimiter {
         }
     }
 
+    /// 当前限额(供 Valkey 路径复用同一阈值)。
+    pub fn limit(&self) -> usize {
+        self.limit
+    }
+
     /// 记一次请求。超限返回 `Err(retry_after_secs)`。
     pub fn check(&self, key: &str) -> Result<(), u64> {
         let now = Instant::now();
@@ -101,29 +106,55 @@ pub fn client_ip(req: &Request) -> String {
     "unknown".to_string()
 }
 
+/// 限流窗口(秒)。
+const WINDOW_SECS: i64 = 60;
+
+fn too_many(retry_after: u64) -> Response {
+    let body = NewApiError {
+        status_code: 429,
+        error_code: "rate_limit_exceeded".into(),
+        error_type: "new_api_error".into(),
+        message: format!("请求过于频繁,请 {retry_after}s 后重试"),
+        local_error: true,
+        skip_retry: true,
+        record_error_log: false,
+    }
+    .to_body(RelayFormat::OpenAi);
+    let mut resp = (StatusCode::TOO_MANY_REQUESTS, Json(body)).into_response();
+    if let Ok(value) = HeaderValue::from_str(&retry_after.to_string()) {
+        resp.headers_mut().insert(header::RETRY_AFTER, value);
+    }
+    resp
+}
+
 /// 中继面限流中间件:按客户端 IP 限流,超限返回 429 + Retry-After(OpenAI 错误体)。
+///
+/// 优先用 Valkey 固定窗口(多副本一致,ADR-007);缓存不可用时降级进程内滑动窗口。
 pub async fn relay_limit(
     State(state): State<Arc<ServerState>>,
     req: Request,
     next: Next,
 ) -> Response {
     let ip = client_ip(&req);
+
+    if let Some(cache) = state.cache.as_ref() {
+        let key = format!("ratelimit:relay:{ip}");
+        match cache
+            .check_window(&key, state.relay_limiter.limit() as i64, WINDOW_SECS)
+            .await
+        {
+            Ok(Ok(())) => return next.run(req).await,
+            Ok(Err(retry_after)) => {
+                return too_many(retry_after.max(1) as u64);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Valkey 限流不可用,降级内存窗口");
+            }
+        }
+    }
+
     if let Err(retry_after) = state.relay_limiter.check(&ip) {
-        let body = NewApiError {
-            status_code: 429,
-            error_code: "rate_limit_exceeded".into(),
-            error_type: "new_api_error".into(),
-            message: format!("请求过于频繁,请 {retry_after}s 后重试"),
-            local_error: true,
-            skip_retry: true,
-            record_error_log: false,
-        }
-        .to_body(RelayFormat::OpenAi);
-        let mut resp = (StatusCode::TOO_MANY_REQUESTS, Json(body)).into_response();
-        if let Ok(value) = HeaderValue::from_str(&retry_after.to_string()) {
-            resp.headers_mut().insert(header::RETRY_AFTER, value);
-        }
-        return resp;
+        return too_many(retry_after);
     }
     next.run(req).await
 }

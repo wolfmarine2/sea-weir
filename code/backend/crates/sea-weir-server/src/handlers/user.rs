@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use axum::extract::State;
 use axum::http::header::SET_COOKIE;
-use axum::http::HeaderValue;
+use axum::http::{HeaderMap, HeaderValue};
 use axum::response::Response;
 use axum::Json;
 use serde::Deserialize;
@@ -72,11 +72,26 @@ pub async fn login(
     response
 }
 
-/// `GET /api/user/logout`:清会话 Cookie。幂等,未登录也成功。
-///
-/// NOTE(TDD): jti 写入 Valkey 吊销列表(ADR-004)待 cache 层接入;
-/// 当前仅清 Cookie,服务端不保留吊销状态。
-pub async fn logout() -> Response {
+/// `GET /api/user/logout`:清会话 Cookie,并把当前会话 jti 写入吊销黑名单
+/// (TTL=剩余有效期)。幂等,未登录也成功。
+pub async fn logout(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Response {
+    // 尽力吊销:能解析出会话则写黑名单,失败不影响登出。
+    if let Some(token) = session::parse_cookie(&headers, session::SESSION_COOKIE) {
+        if let Ok(claims) = state.sessions.verify(&token) {
+            if let Some(cache) = state.cache.as_ref() {
+                let remaining = claims.exp - chrono::Utc::now().timestamp();
+                if remaining > 0 {
+                    if let Err(e) = cache
+                        .set_ex(&session::revoke_key(&claims.jti), "1", remaining)
+                        .await
+                    {
+                        tracing::warn!(error = %e, "写会话吊销黑名单失败");
+                    }
+                }
+            }
+        }
+    }
+
     let mut response = response::ok(serde_json::json!({}));
     set_cookie(&mut response, session::clear_cookie());
     response
