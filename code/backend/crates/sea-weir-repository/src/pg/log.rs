@@ -211,7 +211,8 @@ impl crate::traits::LogRepository for PgLogRepository {
     async fn stat(&self, filter: &LogFilter) -> AppResult<LogStat> {
         let (where_sql, binds) = build_where(filter);
 
-        let quota_sql = format!("SELECT COALESCE(SUM(quota), 0) FROM logs {where_sql}");
+        // SUM 返回 NUMERIC,显式转 BIGINT 以便按 i64 解码。
+        let quota_sql = format!("SELECT COALESCE(SUM(quota), 0)::BIGINT FROM logs {where_sql}");
         let quota_query = sqlx::query_as::<_, (i64,)>(&quota_sql);
         let (total_quota,): (i64,) = apply_binds!(quota_query, &binds)
             .fetch_one(self.pool())
@@ -224,7 +225,7 @@ impl crate::traits::LogRepository for PgLogRepository {
         recent.start_ts = Some(since);
         let (recent_where, recent_binds) = build_where(&recent);
         let recent_sql = format!(
-            "SELECT COUNT(*), COALESCE(SUM(prompt_tokens + completion_tokens), 0) \
+            "SELECT COUNT(*)::BIGINT, COALESCE(SUM(prompt_tokens + completion_tokens), 0)::BIGINT \
              FROM logs {recent_where}"
         );
         let recent_query = sqlx::query_as::<_, (i64, i64)>(&recent_sql);

@@ -269,9 +269,14 @@ fn build_router(state: Arc<ServerState>) -> Router {
         )
         // 消费日志
         .route("/api/log/self", get(handlers::log::self_logs))
+        .route("/api/log/self/stat", get(handlers::log::self_stat))
+        .route("/api/log/stat", get(handlers::log::stat))
         .route("/api/log/", get(handlers::log::all_logs))
         .route("/api/log", get(handlers::log::all_logs))
         .route("/api/log/search", get(handlers::log::all_logs))
+        // 概览(AdminAuth)
+        .route("/api/data/", get(handlers::dashboard::overview))
+        .route("/api/data", get(handlers::dashboard::overview))
         // 定价:倍率配置快照
         .route("/api/ratio_config", get(handlers::pricing::ratio_config))
         // 系统选项 / 倍率配置(RootAuth)

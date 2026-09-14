@@ -122,6 +122,14 @@ impl crate::traits::TokenRepository for PgTokenRepository {
         Ok(count)
     }
 
+    async fn count(&self) -> AppResult<i64> {
+        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tokens WHERE deleted_at IS NULL")
+            .fetch_one(self.pool())
+            .await
+            .map_err(db_err)?;
+        Ok(count)
+    }
+
     async fn exists_by_name(&self, user_id: i64, name: &str) -> AppResult<bool> {
         let (exists,): (bool,) = sqlx::query_as(
             "SELECT EXISTS(SELECT 1 FROM tokens WHERE user_id = $1 AND name = $2 \

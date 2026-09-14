@@ -14,6 +14,8 @@ pub trait TokenRepository: Send + Sync {
     async fn find_by_id(&self, id: i64) -> AppResult<Option<Token>>;
     async fn list_by_user(&self, user_id: i64, offset: i64, limit: i64) -> AppResult<Vec<Token>>;
     async fn count_by_user(&self, user_id: i64) -> AppResult<i64>;
+    /// 全量令牌数(管理面概览用)。
+    async fn count(&self) -> AppResult<i64>;
     /// 本人范围内名称是否已存在(创建前置校验)。
     async fn exists_by_name(&self, user_id: i64, name: &str) -> AppResult<bool>;
 

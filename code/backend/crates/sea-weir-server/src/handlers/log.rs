@@ -92,3 +92,31 @@ pub async fn all_logs(
     let filter = q.filter(None);
     query_logs(&state, filter, &q).await
 }
+
+async fn query_stat(state: &ServerState, filter: LogFilter) -> Response {
+    let Some(logs) = state.logs.as_ref() else {
+        return response::err(AppError::Database("数据库未连接".into()));
+    };
+    match logs.stat(&filter).await {
+        Ok(s) => response::ok(serde_json::json!({
+            "total_quota": s.total_quota,
+            "rpm": s.rpm,
+            "tpm": s.tpm,
+        })),
+        Err(e) => response::err(e),
+    }
+}
+
+/// `GET /api/log/stat`(AdminAuth):全量统计(总额度 + 最近 60s rpm/tpm)。
+pub async fn stat(State(state): State<Arc<ServerState>>, _auth: AdminUser) -> Response {
+    query_stat(&state, LogFilter::default()).await
+}
+
+/// `GET /api/log/self/stat`(UserAuth):本人统计。
+pub async fn self_stat(State(state): State<Arc<ServerState>>, auth: AuthUser) -> Response {
+    let filter = LogFilter {
+        user_id: Some(auth.user_id),
+        ..Default::default()
+    };
+    query_stat(&state, filter).await
+}

@@ -18,6 +18,7 @@ import ChannelPage from '@/pages/admin/ChannelPage';
 import SettingPage from '@/pages/admin/SettingPage';
 import UserPage from '@/pages/admin/UserPage';
 import Login from '@/pages/auth/Login';
+import Dashboard from '@/pages/console/Dashboard';
 import LogPage from '@/pages/console/LogPage';
 import TokenPage from '@/pages/console/TokenPage';
 import Home from '@/pages/public/Home';
@@ -44,6 +45,14 @@ export const router = createBrowserRouter([
         element: (
           <RequireRole minRole={1}>
             <LogPage />
+          </RequireRole>
+        ),
+      },
+      {
+        path: 'console/dashboard',
+        element: (
+          <RequireRole minRole={1}>
+            <Dashboard />
           </RequireRole>
         ),
       },
