@@ -85,6 +85,10 @@ async fn main() -> anyhow::Result<()> {
         channels,
         logs,
         pricing: sea_weir_server::pricing::PricingCache::new(),
+        relay_limiter: sea_weir_server::middleware::rate_limit::SlidingWindowLimiter::new(
+            relay_rpm(),
+            60,
+        ),
         http: reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(600))
             .build()
@@ -146,8 +150,31 @@ async fn connect_repositories(
     )
 }
 
+/// 中继面每 IP 每分钟限额,可用 `SEA_WEIR_RELAY_RPM` 覆盖(默认 600)。
+fn relay_rpm() -> usize {
+    std::env::var("SEA_WEIR_RELAY_RPM")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(600)
+}
+
 /// 路由装配。已落地端点 + 健康探针;其余返回 501。
 fn build_router(state: Arc<ServerState>) -> Router {
+    // 中继面:挂 IP 限流中间件(超限 429 + Retry-After)。
+    let relay = Router::new()
+        .route(
+            "/v1/chat/completions",
+            post(handlers::relay::chat_completions),
+        )
+        .route("/v1/messages", post(handlers::relay::claude_messages))
+        .route("/v1/models", get(handlers::relay::list_models))
+        .route("/v1/models/{model}", get(handlers::relay::get_model))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            sea_weir_server::middleware::rate_limit::relay_limit,
+        ));
+
     Router::new()
         // 公开:全站状态 / 首装向导
         .route("/api/status", get(handlers::system::status))
@@ -215,14 +242,8 @@ fn build_router(state: Arc<ServerState>) -> Router {
             "/api/option",
             get(handlers::option::list).put(handlers::option::update),
         )
-        // 中继面(TokenAuth / sk-token)
-        .route(
-            "/v1/chat/completions",
-            post(handlers::relay::chat_completions),
-        )
-        .route("/v1/messages", post(handlers::relay::claude_messages))
-        .route("/v1/models", get(handlers::relay::list_models))
-        .route("/v1/models/{model}", get(handlers::relay::get_model))
+        // 中继面(TokenAuth / sk-token;已挂 IP 限流)
+        .merge(relay)
         // K8s 探针
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))

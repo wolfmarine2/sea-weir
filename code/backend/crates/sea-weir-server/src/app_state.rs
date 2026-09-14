@@ -47,6 +47,8 @@ pub struct ServerState {
     pub logs: Option<Arc<dyn LogRepository>>,
     /// 定价视图缓存(进程内,60s TTL)。
     pub pricing: crate::pricing::PricingCache,
+    /// 中继面限流(进程内滑动窗口;Valkey 多副本一致待接入)。
+    pub relay_limiter: crate::middleware::rate_limit::SlidingWindowLimiter,
     /// 转发上游用的 HTTP 客户端(连接池复用)。
     pub http: reqwest::Client,
     /// 进程启动时刻(unix 秒)
