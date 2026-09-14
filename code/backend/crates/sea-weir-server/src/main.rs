@@ -98,7 +98,9 @@ async fn main() -> anyhow::Result<()> {
         started,
     });
 
-    let app = build_router(state);
+    let app = build_router(state.clone());
+    // 订阅缓存失效广播(多节点即时失效;未配置缓存时为空操作)。
+    sea_weir_server::cache_listener::spawn(state.clone());
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "HTTP 监听中");

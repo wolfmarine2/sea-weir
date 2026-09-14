@@ -62,9 +62,15 @@ pub async fn update(
         }
     }
 
-    // 倍率等配置变更后立即使定价缓存失效(多节点广播待 Valkey)。
+    // 倍率等配置变更后立即使本进程定价缓存失效。
     state.pricing.invalidate().await;
-    tracing::info!(count = map.len(), "选项已更新,定价缓存已失效");
+    // 广播给其他节点(多节点即时失效;失败仅告警,60s TTL 兜底)。
+    if let Some(cache) = state.cache.as_ref() {
+        if let Err(e) = cache.publish("cache:invalidate:option", "1").await {
+            tracing::warn!(error = %e, "发布缓存失效广播失败");
+        }
+    }
+    tracing::info!(count = map.len(), "选项已更新,定价缓存已失效并广播");
 
     response::ok(serde_json::json!({ "updated": map.len() }))
 }

@@ -67,6 +67,7 @@ pub mod cache_client {
     /// 轻量封装:只暴露本项目需要的最小命令集。
     #[derive(Clone)]
     pub struct CacheClient {
+        config: Config,
         inner: Client,
     }
 
@@ -74,14 +75,38 @@ pub mod cache_client {
         pub async fn connect(url: &str) -> Result<Self, String> {
             let config =
                 Config::from_url(url).map_err(|e| format!("cache url 解析失败: {e}"))?;
-            let client = Builder::from_config(config)
+            let client = Builder::from_config(config.clone())
                 .build()
                 .map_err(|e| format!("cache 客户端构建失败: {e}"))?;
             client
                 .init()
                 .await
                 .map_err(|e| format!("cache 连接失败: {e}"))?;
-            Ok(Self { inner: client })
+            Ok(Self {
+                config,
+                inner: client,
+            })
+        }
+
+        /// 构造订阅客户端(独立连接,用于 pub/sub;主客户端不被订阅阻塞)。
+        pub async fn subscriber(&self) -> Result<fred::clients::SubscriberClient, String> {
+            let subscriber = Builder::from_config(self.config.clone())
+                .build_subscriber_client()
+                .map_err(|e| format!("订阅客户端构建失败: {e}"))?;
+            subscriber
+                .init()
+                .await
+                .map_err(|e| format!("订阅客户端连接失败: {e}"))?;
+            Ok(subscriber)
+        }
+
+        /// 发布失效广播(多节点即时失效)。
+        pub async fn publish(&self, channel: &str, payload: &str) -> Result<(), String> {
+            self.inner
+                .publish::<i64, _, _>(channel, payload)
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string())
         }
 
         pub async fn get(&self, key: &str) -> Result<Option<String>, String> {
