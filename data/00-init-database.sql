@@ -10,8 +10,10 @@
 --   - CREATE DATABASE 不能运行在事务块内,故用 psql 的 \gexec 按需执行;
 --   - 口令通过 psql 变量 :'app_password' 注入,不写入仓库;
 --   - 角色/库名与 config 中 database.dsn 保持一致(默认 sea_weir);
---   - 必须 DBCOMPATIBILITY 'PG':'A'(Oracle 兼容)模式下 '' 等同 NULL,写 NOT NULL 列会失败,
---     且兼容模式建库后不可修改,已按 'A' 建的库需重建。
+--   - 必须 PG 兼容模式:'A'(Oracle 兼容)模式下 '' 等同 NULL,写 NOT NULL 列会失败,
+--     且兼容模式建库后不可修改,已按 'A' 建的库需重建;
+--   - DBCOMPATIBILITY 字面量各版本支持不一:'PG' 与 'D' 均表示 PostgreSQL,
+--     若本版本不认 'PG',把下面的 'PG' 换成 'D' 再执行。
 -- =============================================================================
 
 \set ON_ERROR_STOP on

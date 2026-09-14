@@ -80,7 +80,7 @@ check_db_connectivity() {
         psql_err="$(psql_loose -c "SELECT 1;" 2>&1)" || true
         err "无法连接 ${DB_HOST}:${DB_PORT}/${DB_NAME},详情:"
         printf '    %s\n' "$psql_err" | sed 's/^[[:space:]]*/    /' | head -6
-        fail "数据库连接失败(连接参数来自 Nacos database.dsn),请检查配置内容与网络"
+        fail "数据库连接失败(连接参数来自 DATABASE_DSN),请检查配置内容与网络"
     fi
 }
 
@@ -93,8 +93,11 @@ ensure_database() {
         ok "数据库已存在"
         return 0
     fi
-    # openGauss 须 PG 兼容模式('A' 模式下 '' 等同 NULL);原生 PostgreSQL 不认该子句,回退普通建库
+    # openGauss 须 PG 兼容模式('A' 模式下 '' 等同 NULL)。各版本对 DBCOMPATIBILITY
+    # 字面量支持不一('PG'/'D' 均表示 PostgreSQL),依次尝试;原生 PostgreSQL 不认该
+    # 子句,最后回退普通建库。
     if psql_loose -d postgres -c "CREATE DATABASE \"${DB_NAME}\" DBCOMPATIBILITY 'PG';" >/dev/null 2>&1 \
+        || psql_loose -d postgres -c "CREATE DATABASE \"${DB_NAME}\" DBCOMPATIBILITY 'D';" >/dev/null 2>&1 \
         || psql_loose -d postgres -c "CREATE DATABASE \"${DB_NAME}\";" >/dev/null 2>&1; then
         ok "数据库已创建: ${DB_NAME}"
     else

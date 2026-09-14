@@ -1,10 +1,12 @@
 //! 连接池装配。主库与日志库物理分离(逻辑上可同库)。
 
+use std::str::FromStr;
 use std::time::Duration;
 
 use sea_weir_types::config::DatabaseConfig;
 use sea_weir_types::{AppError, AppResult};
-use sqlx::postgres::PgPoolOptions;
+use sqlx::postgres::{PgConnectOptions, PgConnection, PgPoolOptions};
+use sqlx::Connection;
 
 /// 双连接池。日志表写入走独立 pool,避免日志洪峰挤占账务连接。
 pub struct DbPools {
@@ -15,7 +17,18 @@ pub struct DbPools {
 
 impl DbPools {
     /// 建立主库/日志库连接池。`log_dsn` 为空时日志库复用主库 pool。
+    ///
+    /// 建池前先做兼容模式自愈(`ensure_compatible_database`):openGauss 若以 Oracle
+    /// 兼容建库,`''` 等同 NULL,会在首装写 `users.email` 时报 not-null 约束错误;
+    /// 该属性建库后不可修改,只能重建空库。
     pub async fn connect(cfg: &DatabaseConfig) -> AppResult<Self> {
+        let log_dsn = cfg.log_dsn.as_deref().map(str::trim).filter(|s| !s.is_empty());
+
+        ensure_compatible_database(&cfg.dsn).await?;
+        if let Some(dsn) = log_dsn.filter(|s| *s != cfg.dsn.trim()) {
+            ensure_compatible_database(dsn).await?;
+        }
+
         let main = PgPoolOptions::new()
             .max_connections(cfg.max_connections.max(1))
             .acquire_timeout(Duration::from_secs(10))
@@ -23,7 +36,7 @@ impl DbPools {
             .await
             .map_err(|e| AppError::Database(format!("主库连接失败: {e}")))?;
 
-        let log = match cfg.log_dsn.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let log = match log_dsn {
             Some(dsn) => PgPoolOptions::new()
                 .max_connections(cfg.log_max_connections.max(1))
                 .acquire_timeout(Duration::from_secs(10))
@@ -37,7 +50,7 @@ impl DbPools {
         };
 
         ensure_pg_empty_string(&main, "主库").await?;
-        if cfg.log_dsn.as_deref().map(str::trim).is_some_and(|s| !s.is_empty()) {
+        if log_dsn.is_some() {
             ensure_pg_empty_string(&log, "日志库").await?;
         }
 
@@ -74,6 +87,189 @@ async fn ensure_pg_empty_string(pool: &sqlx::PgPool, label: &str) -> AppResult<(
         )));
     }
     Ok(())
+}
+
+/// 兼容模式自愈。目标库若为 openGauss Oracle 兼容模式(`''` 等同 NULL)且尚无业务数据
+/// (`users` 表不存在或为空),用同一 DSN 账号连维护库 `postgres` 重建为 PG 兼容库后再
+/// 返回,使首装无需人工介入;已有业务数据则返回错误,绝不自动丢数据。
+///
+/// 兼容模式建库后不可修改,只能 `DROP DATABASE` 重建,故该检查必须在建立主连接池之前
+/// (池一旦连上目标库,DROP 会因存在活动连接而失败)。
+async fn ensure_compatible_database(dsn: &str) -> AppResult<()> {
+    let opts = PgConnectOptions::from_str(dsn)
+        .map_err(|e| AppError::Database(format!("DATABASE_DSN 解析失败: {e}")))?;
+    // 库名取自 DSN;未指定或指向维护库本身时无事可做。
+    let Some(db_name) = opts.get_database().map(str::to_owned).filter(|d| !d.is_empty()) else {
+        return Ok(());
+    };
+    if db_name == "postgres" {
+        return Ok(());
+    }
+
+    // 短连接探测空串语义。用完立即关闭,否则随后的 DROP DATABASE 会失败。
+    let mut probe = match PgConnection::connect_with(&opts).await {
+        Ok(c) => c,
+        // 连不上时不做自愈,交由主连接池给出原始错误。
+        Err(_) => return Ok(()),
+    };
+    let empty_is_null: bool = sqlx::query_scalar("SELECT '' IS NULL")
+        .fetch_one(&mut probe)
+        .await
+        .map_err(|e| AppError::Database(format!("兼容模式探测失败: {e}")))?;
+    if !empty_is_null {
+        probe.close().await.ok();
+        return Ok(());
+    }
+
+    // Oracle 兼容:仅当无业务数据时才自动重建。
+    let users: i64 = sqlx::query_scalar("SELECT count(*)::BIGINT FROM users")
+        .fetch_one(&mut probe)
+        .await
+        .unwrap_or(0);
+    probe.close().await.ok();
+
+    if users > 0 {
+        return Err(AppError::Database(format!(
+            "数据库 {db_name} 为 Oracle 兼容模式(空串 '' 被视为 NULL),且已有 {users} 个用户;\
+             不会自动重建,请人工迁移到 PG 兼容库(见 data/00-init-database.sql)"
+        )));
+    }
+
+    rebuild_as_pg_compatible(&opts, &db_name).await
+}
+
+/// 以维护库 `postgres` 连接重建目标库。要求 DSN 账号具备 CREATEDB 权限;
+/// 权限不足或无法连维护库时返回可直接照做的排查信息。
+///
+/// 顺序上先建"探测库"确认当前 openGauss 接受的 `DBCOMPATIBILITY` 字面量,再删目标库,
+/// 避免出现"目标库已删、却因字面量不被支持而建不回来"的空窗。
+async fn rebuild_as_pg_compatible(opts: &PgConnectOptions, db_name: &str) -> AppResult<()> {
+    let mut maint = PgConnection::connect_with(&opts.clone().database("postgres"))
+        .await
+        .map_err(|e| {
+            AppError::Database(format!(
+                "数据库 {db_name} 为 Oracle 兼容模式且无数据,需重建,但无法以当前账号连接维护库 postgres: {e};\
+                 请用超级用户执行 `DROP DATABASE {db_name}; CREATE DATABASE {db_name} DBCOMPATIBILITY 'PG';`(见 data/00-init-database.sql)"
+            ))
+        })?;
+
+    let ident = quote_ident(&mut maint, db_name).await?;
+
+    // 多副本并发自愈去重:重建前确认目标库仍是 Oracle 兼容,
+    // 已被其它副本重建则直接跳过,避免把刚建好的空库再删一次。
+    if db_compat(&mut maint, db_name).await.as_deref().is_some_and(|c| c != "A") {
+        tracing::info!(database = %db_name, "目标库已被其它副本重建为兼容模式,跳过自愈");
+        maint.close().await.ok();
+        return Ok(());
+    }
+
+    // openGauss 各版本对 DBCOMPATIBILITY 字面量支持不一:'PG' 与 'D' 均表示 PostgreSQL。
+    // 用一次性探测库逐个验证,取第一个可用者;探测库名带进程号,避免多副本互相覆盖。
+    let probe_name = probe_db_name(db_name);
+    let probe_ident = quote_ident(&mut maint, &probe_name).await?;
+    let mut last_err = String::new();
+    let mut usable: Option<&str> = None;
+    for compat in ["PG", "D"] {
+        sqlx::query(&format!("DROP DATABASE IF EXISTS {probe_ident}"))
+            .execute(&mut maint)
+            .await
+            .ok();
+        match sqlx::query(&format!("CREATE DATABASE {probe_ident} DBCOMPATIBILITY '{compat}'"))
+            .execute(&mut maint)
+            .await
+        {
+            Ok(_) => {
+                usable = Some(compat);
+                break;
+            }
+            Err(e) => last_err = e.to_string(),
+        }
+    }
+    let Some(compat) = usable else {
+        maint.close().await.ok();
+        return Err(AppError::Database(format!(
+            "无法自动重建数据库 {db_name}:当前 openGauss 不接受 DBCOMPATIBILITY 'PG'/'D'({last_err});\
+             请用超级用户手工执行 `CREATE DATABASE {db_name} DBCOMPATIBILITY 'PG';`(见 data/00-init-database.sql)"
+        )));
+    };
+    sqlx::query(&format!("DROP DATABASE IF EXISTS {probe_ident}"))
+        .execute(&mut maint)
+        .await
+        .ok();
+
+    // 探测期间(数十至数百毫秒)另一副本可能已完成重建,删库前最后确认一次。
+    if db_compat(&mut maint, db_name).await.as_deref().is_some_and(|c| c != "A") {
+        tracing::info!(database = %db_name, "目标库已被其它副本重建为兼容模式,跳过自愈");
+        maint.close().await.ok();
+        return Ok(());
+    }
+
+    // 断开目标库上的其它连接(另一副本可能仍连着目标库)。
+    sqlx::query(
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
+         WHERE datname = $1 AND pid <> pg_backend_pid()",
+    )
+    .bind(db_name)
+    .execute(&mut maint)
+    .await
+    .ok();
+
+    sqlx::query(&format!("DROP DATABASE IF EXISTS {ident}"))
+        .execute(&mut maint)
+        .await
+        .map_err(|e| {
+            AppError::Database(format!(
+                "自动重建失败(DROP DATABASE {db_name} 需 CREATEDB 权限): {e};\
+                 请用超级用户执行 `DROP DATABASE {db_name}; CREATE DATABASE {db_name} DBCOMPATIBILITY 'PG';`"
+            ))
+        })?;
+
+    sqlx::query(&format!("CREATE DATABASE {ident} DBCOMPATIBILITY '{compat}'"))
+        .execute(&mut maint)
+        .await
+        .map_err(|e| {
+            AppError::Database(format!(
+                "自动重建失败(CREATE DATABASE {db_name} 需 CREATEDB 权限): {e};\
+                 请用超级用户执行 `CREATE DATABASE {db_name} DBCOMPATIBILITY '{compat}';`"
+            ))
+        })?;
+
+    maint.close().await.ok();
+    tracing::warn!(
+        database = %db_name,
+        compatibility = %compat,
+        "检测到 Oracle 兼容模式空库,已自动重建为 PostgreSQL 兼容(兼容模式建库后不可改)"
+    );
+    Ok(())
+}
+
+/// 用数据库端 `quote_ident` 生成安全标识符,避免库名直接拼接 SQL。
+async fn quote_ident(conn: &mut PgConnection, name: &str) -> AppResult<String> {
+    sqlx::query_scalar("SELECT quote_ident($1)")
+        .bind(name)
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(|e| AppError::Database(format!("构造数据库标识符失败: {e}")))
+}
+
+/// 读取目标库的兼容模式(openGauss 专有列)。查询失败返回 None,按"未知"处理。
+async fn db_compat(conn: &mut PgConnection, db_name: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT datcompatibility FROM pg_database WHERE datname = $1")
+        .bind(db_name)
+        .fetch_optional(&mut *conn)
+        .await
+        .ok()
+        .flatten()
+}
+
+/// 探测库名：openGauss 标识符上限 63 字节，故前缀按字节截到 40，
+/// 再拼 `_probe_<pid>`（≤54 字节）。`pop()` 保证不切断多字节字符。
+fn probe_db_name(db_name: &str) -> String {
+    let mut base = db_name.to_string();
+    while base.len() > 40 {
+        base.pop();
+    }
+    format!("{base}_probe_{}", std::process::id())
 }
 
 /// Repository 层共享上下文:连接池 + 缓存客户端。
@@ -209,4 +405,47 @@ mod tests {
     // - [ ] log_dsn 为 None 时 main 与 log 指向同一 pool
     // - [ ] migrate() 幂等:重复执行不报错
     // - [ ] 连接池上限生效
+
+    use super::*;
+
+    /// 维护库本身不做自愈;不应尝试连接(无需数据库即可通过)。
+    #[tokio::test]
+    async fn compat_probe_skips_postgres_db() {
+        let r = ensure_compatible_database("postgres://u:p@127.0.0.1:1/postgres").await;
+        assert!(r.is_ok(), "postgres 库应直接跳过: {r:?}");
+    }
+
+    /// DSN 未指定库名时无事可做,不应报错。
+    #[tokio::test]
+    async fn compat_probe_skips_dsn_without_db() {
+        let r = ensure_compatible_database("postgres://u:p@127.0.0.1:1").await;
+        assert!(r.is_ok(), "无库名应跳过: {r:?}");
+    }
+
+    /// 连不上目标库时不做自愈(交由主连接池报原始错误),且必须是 Ok 而非误删库。
+    #[tokio::test]
+    async fn compat_probe_skips_unreachable_target() {
+        let r =
+            ensure_compatible_database("postgres://u:p@127.0.0.1:1/sea_weir?connect_timeout=1")
+                .await;
+        assert!(r.is_ok(), "连不上应跳过自愈: {r:?}");
+    }
+
+    /// 非法 DSN 必须显式报错,避免"静默跳过"掩盖配置问题。
+    #[tokio::test]
+    async fn compat_probe_rejects_malformed_dsn() {
+        let r = ensure_compatible_database("not-a-dsn").await;
+        assert!(matches!(r, Err(AppError::Database(_))), "非法 DSN 应报错: {r:?}");
+    }
+
+    /// 探测库名带进程号且不超过 63 字节标识符上限;多字节库名不切断字符。
+    #[test]
+    fn probe_db_name_is_bounded() {
+        assert!(probe_db_name("sea_weir").ends_with(&format!("_probe_{}", std::process::id())));
+        let long = probe_db_name(&"x".repeat(80));
+        assert!(long.len() <= 63, "probe 名应 ≤ 63 字节: {long}");
+        let wide = probe_db_name(&"数据".repeat(40));
+        assert!(wide.len() <= 63, "多字节库名应 ≤ 63 字节: {wide}");
+        assert!(wide.is_char_boundary(wide.len()));
+    }
 }
