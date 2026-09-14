@@ -741,25 +741,31 @@ fn scan_sse_usage(line_buf: &mut String, chunk: &[u8], usage: &mut Usage) {
 /// 按上游 usage 扣费:用户钱包与令牌额度各扣一次(token 无限额度时跳过)。
 ///
 /// NOTE(TDD): 最小实现(无预扣/退款);三段式(预扣→结算)在 pipeline 落地后替换。
+/// 结算:用户额度**不参与拦截**(内部使用——用户不需要额度,0 额度也能用),
+/// 只累计 `used_quota / request_count` 作统计口径;
+/// 令牌额度**保留为可选限制**:令牌非「无限额度」时按条件扣减,不足则拒绝。
+///
+/// 渠道侧的“额度”指上游账户余额,由渠道余额探测维护(见 `channel::update_balance`),
+/// 不在此处拦截。
 async fn charge(state: &ServerState, auth: &AuthToken, quota: i64) -> Result<(), AppError> {
     if quota <= 0 {
         return Ok(());
     }
-    let users = state
-        .users
-        .as_ref()
-        .ok_or_else(|| AppError::Database("数据库未连接".into()))?;
     let tokens = state
         .tokens
         .as_ref()
         .ok_or_else(|| AppError::Database("数据库未连接".into()))?;
 
-    if !users.try_decrease_quota(auth.user_id, quota).await? {
+    // 令牌无限额度时 try_decrease_quota 直接返回 true(不写库)。
+    if !tokens.try_decrease_quota(auth.token_id, quota).await? {
         return Err(AppError::QuotaExceeded);
     }
-    if !tokens.try_decrease_quota(auth.token_id, quota).await? {
-        users.increase_quota(auth.user_id, quota).await?;
-        return Err(AppError::QuotaExceeded);
+
+    // 统计口径(不拦截请求):累计用户已用额度与请求数,失败仅告警。
+    if let Some(users) = state.users.as_ref() {
+        if let Err(e) = users.accumulate_usage(auth.user_id, quota, 1).await {
+            tracing::warn!(error = %e, "累计用户用量失败(不影响请求)");
+        }
     }
     Ok(())
 }
