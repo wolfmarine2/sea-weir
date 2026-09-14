@@ -7,7 +7,10 @@ pub struct Token {
     pub id: i64,
     pub user_id: i64,
     /// 48 位随机串,`sk-` 前缀不入库。列表接口按 `MaskTokenKey` 脱敏。
-    #[serde(skip_serializing)]
+    ///
+    /// `default` 使缓存往返安全:序列化时跳过(**明文不落缓存**),
+    /// 反序列化(如从 Valkey 读回)默认为空串,由调用方按需回填。
+    #[serde(skip_serializing, default)]
     pub key: String,
     /// 1 启用 / 2 禁用 / 3 过期 / 4 额度耗尽
     pub status: i32,

@@ -17,6 +17,13 @@ impl PgUserRepository {
     fn pool(&self) -> &sqlx::PgPool {
         &self.ctx.pools.main
     }
+
+    /// 失效用户缓存(状态/角色/密码变更后调用)。
+    async fn invalidate_user(&self, id: i64) {
+        if let Some(cache) = self.ctx.cache.as_ref() {
+            let _ = cache.del(&format!("user:{id}")).await;
+        }
+    }
 }
 
 /// 与 `users` 表逐列对应的行结构。`"group"` 是保留字,SQL 里双引号引用。
@@ -100,13 +107,40 @@ fn db_err(e: sqlx::Error) -> AppError {
 #[async_trait]
 impl crate::traits::UserRepository for PgUserRepository {
     async fn find_by_id(&self, id: i64) -> AppResult<Option<User>> {
+        let cache_key = format!("user:{id}");
+        // 读穿:先查 Valkey,未命中回源 DB 并回填(ADR-007,TTL 60s)。
+        if let Some(cache) = self.ctx.cache.as_ref() {
+            match cache.get(&cache_key).await {
+                Ok(Some(json)) => {
+                    if let Ok(user) = serde_json::from_str::<User>(&json) {
+                        return Ok(Some(user));
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => tracing::warn!(error = %e, "读用户缓存失败,回源 DB"),
+            }
+        }
+
         let sql = format!("SELECT {USER_COLUMNS} FROM users WHERE id = $1 AND deleted_at IS NULL");
         let row: Option<UserRow> = sqlx::query_as(&sql)
             .bind(id)
             .fetch_optional(self.pool())
             .await
             .map_err(db_err)?;
-        Ok(row.map(UserRow::into_domain))
+        let user = row.map(UserRow::into_domain);
+
+        if let (Some(cache), Some(user)) = (self.ctx.cache.as_ref(), user.as_ref()) {
+            // 序列化会跳过 password(明文不落缓存)。
+            if let Ok(json) = serde_json::to_string(user) {
+                if let Err(e) = cache
+                    .set_ex(&cache_key, &json, crate::pool::CACHE_TTL_SECS)
+                    .await
+                {
+                    tracing::warn!(error = %e, "写用户缓存失败");
+                }
+            }
+        }
+        Ok(user)
     }
 
     async fn find_by_username(&self, username: &str) -> AppResult<Option<User>> {
@@ -182,6 +216,7 @@ impl crate::traits::UserRepository for PgUserRepository {
             .execute(self.pool())
             .await
             .map_err(db_err)?;
+        self.invalidate_user(id).await;
         Ok(())
     }
 
@@ -191,6 +226,7 @@ impl crate::traits::UserRepository for PgUserRepository {
             .execute(self.pool())
             .await
             .map_err(db_err)?;
+        self.invalidate_user(id).await;
         Ok(())
     }
 
@@ -248,6 +284,9 @@ impl crate::traits::UserRepository for PgUserRepository {
         .execute(self.pool())
         .await
         .map_err(db_err)?;
+        if result.rows_affected() > 0 {
+            self.invalidate_user(id).await;
+        }
         Ok(result.rows_affected() > 0)
     }
 
@@ -258,6 +297,7 @@ impl crate::traits::UserRepository for PgUserRepository {
             .execute(self.pool())
             .await
             .map_err(db_err)?;
+        self.invalidate_user(id).await;
         Ok(())
     }
 

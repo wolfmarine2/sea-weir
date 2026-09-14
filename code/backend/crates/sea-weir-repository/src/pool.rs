@@ -58,7 +58,12 @@ pub struct RepositoryContext {
     pub pools: DbPools,
     /// Valkey 客户端;未配置/连接失败时为 None(读路径各自回源 DB)。
     pub cache: Option<cache_client::CacheClient>,
+    /// 令牌缓存键的 HMAC 密钥(保证明文 key 不入缓存)。
+    pub cache_secret: String,
 }
+
+/// 缓存 TTL(ADR-007:用户/令牌 60s 兜底)。
+pub const CACHE_TTL_SECS: i64 = 60;
 
 /// Valkey(Redis 协议)客户端封装。
 pub mod cache_client {

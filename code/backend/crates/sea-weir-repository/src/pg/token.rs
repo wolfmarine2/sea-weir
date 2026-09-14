@@ -73,17 +73,46 @@ fn db_err(e: sqlx::Error) -> AppError {
 #[async_trait]
 impl crate::traits::TokenRepository for PgTokenRepository {
     async fn find_by_key(&self, key: &str) -> AppResult<Option<Token>> {
-        // NOTE(TDD): 当前无缓存层,直接按明文 key 查库。接入 Valkey 后入参改为
-        // HMAC 摘要、缓存未命中再以明文回源,meth签名需同步调整(见 cache.rs)。
-        let sql = format!(
-            "SELECT {TOKEN_COLUMNS} FROM tokens WHERE key = $1 AND deleted_at IS NULL"
+        // 缓存键用 HMAC 摘要:明文 key 既不入缓存键,也不入缓存值(见下方序列化注释)。
+        let cache_key = format!(
+            "token:{}",
+            crate::cache::hmac_token_key(key, &self.ctx.cache_secret)
         );
+        if let Some(cache) = self.ctx.cache.as_ref() {
+            match cache.get(&cache_key).await {
+                Ok(Some(json)) => {
+                    if let Ok(mut token) = serde_json::from_str::<Token>(&json) {
+                        // 缓存值不含明文 key,按本次请求回填。
+                        token.key = key.to_string();
+                        return Ok(Some(token));
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => tracing::warn!(error = %e, "读令牌缓存失败,回源 DB"),
+            }
+        }
+
+        let sql =
+            format!("SELECT {TOKEN_COLUMNS} FROM tokens WHERE key = $1 AND deleted_at IS NULL");
         let row: Option<TokenRow> = sqlx::query_as(&sql)
             .bind(key)
             .fetch_optional(self.pool())
             .await
             .map_err(db_err)?;
-        Ok(row.map(TokenRow::into_domain))
+        let token = row.map(TokenRow::into_domain);
+
+        if let (Some(cache), Some(token)) = (self.ctx.cache.as_ref(), token.as_ref()) {
+            // 序列化会跳过 key(明文不落缓存)。
+            if let Ok(json) = serde_json::to_string(token) {
+                if let Err(e) = cache
+                    .set_ex(&cache_key, &json, crate::pool::CACHE_TTL_SECS)
+                    .await
+                {
+                    tracing::warn!(error = %e, "写令牌缓存失败");
+                }
+            }
+        }
+        Ok(token)
     }
 
     async fn find_by_id(&self, id: i64) -> AppResult<Option<Token>> {

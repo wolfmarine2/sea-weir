@@ -7,7 +7,9 @@ pub struct User {
     pub id: i64,
     pub username: String,
     /// bcrypt 哈希。**永不出现在任何 API 响应中**。
-    #[serde(skip_serializing)]
+    ///
+    /// `default` 使缓存往返安全:序列化时跳过,反序列化(如从 Valkey 读回)默认为空串。
+    #[serde(skip_serializing, default)]
     pub password: String,
     pub display_name: String,
     /// 0 guest / 1 common / 10 admin / 100 root

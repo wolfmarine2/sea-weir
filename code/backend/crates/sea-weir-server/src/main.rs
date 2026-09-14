@@ -166,6 +166,7 @@ async fn connect_repositories(
     let ctx = Arc::new(RepositoryContext {
         pools,
         cache,
+        cache_secret: config.session.crypto_secret.clone(),
     });
     (
         Some(Arc::new(PgUserRepository::new(ctx.clone()))),
