@@ -203,22 +203,6 @@ async fn run_relay(
     }
     let is_stream = body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
 
-    // Claude/Gemini 流式的事件改写尚未实现。
-    if is_stream && entry != RelayFormat::OpenAi {
-        return crate::response::relay_err(
-            NewApiError {
-                status_code: 501,
-                error_code: String::new(),
-                error_type: "new_api_error".into(),
-                message: "该入口暂不支持流式响应".into(),
-                local_error: true,
-                skip_retry: true,
-                record_error_log: false,
-            },
-            entry,
-        );
-    }
-
     let request_id = uuid::Uuid::new_v4().to_string();
     let started = Instant::now();
 
@@ -245,6 +229,15 @@ async fn run_relay(
         Ok(v) => v,
         Err(e) => return relay_fail(e, entry),
     };
+    // 非 OpenAI 入口的流式:要求上游带上 usage(便于结算)。
+    if is_stream && entry != RelayFormat::OpenAi {
+        if let Some(obj) = upstream_body.as_object_mut() {
+            obj.insert(
+                "stream_options".into(),
+                serde_json::json!({ "include_usage": true }),
+            );
+        }
+    }
 
     let channels = match state.channels.as_ref() {
         Some(repo) => repo.clone(),
@@ -294,6 +287,17 @@ async fn run_relay(
         let url = upstream_url(base_url, "/v1/chat/completions");
         match forward_once(&state.http, &url, &channel_key, &upstream_body, is_stream).await {
             Ok(UpstreamOutcome::Stream(resp)) => {
+                if entry == RelayFormat::Claude {
+                    return claude_stream_response(
+                        state.clone(),
+                        auth.clone(),
+                        channel.id,
+                        origin_model.clone(),
+                        request_id.clone(),
+                        resp,
+                        price.clone(),
+                    );
+                }
                 return stream_response(
                     state.clone(),
                     auth.clone(),
@@ -422,6 +426,173 @@ fn stream_response(
         .header(header::CACHE_CONTROL, "no-cache")
         .body(Body::from_stream(body_stream))
         .unwrap_or_else(|_| relay_fail(AppError::Internal("构造流式响应失败".into()), RelayFormat::OpenAi))
+}
+
+/// 构造一行 Claude SSE 事件。
+fn claude_sse(event: &str, data: serde_json::Value) -> bytes::Bytes {
+    bytes::Bytes::from(format!("event: {event}\ndata: {data}\n\n"))
+}
+
+/// Claude 入口的流式响应:把上游 OpenAI SSE 实时改写为 Claude 事件序列。
+///
+/// 事件顺序:`message_start` → `content_block_start` → `content_block_delta`* →
+/// `content_block_stop` → `message_delta`(带 usage)→ `message_stop`。
+/// 计费与日志在流结束后按累计 usage 结算(与 OpenAI 流式一致)。
+#[allow(clippy::too_many_arguments)]
+fn claude_stream_response(
+    state: Arc<ServerState>,
+    auth: AuthToken,
+    channel_id: i64,
+    model: String,
+    request_id: String,
+    resp: reqwest::Response,
+    price: billing::PriceData,
+) -> Response {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(16);
+    let started = Instant::now();
+
+    tokio::spawn(async move {
+        let mut usage = Usage::default();
+        let mut buf = String::new();
+        let mut block_started = false;
+        let mut closed = false;
+        let mut stream = resp.bytes_stream();
+
+        while let Some(chunk) = stream.next().await {
+            let Ok(bytes) = chunk else { break };
+            buf.push_str(&String::from_utf8_lossy(&bytes));
+            while let Some(pos) = buf.find('\n') {
+                let line = buf[..pos].to_string();
+                buf.drain(..=pos);
+                let line = line.trim();
+                let Some(payload) = line.strip_prefix("data:") else {
+                    continue;
+                };
+                let payload = payload.trim();
+                if payload.is_empty() {
+                    continue;
+                }
+                if payload == "[DONE]" {
+                    if block_started && !closed {
+                        closed = true;
+                        let _ = tx
+                            .send(Ok(claude_sse(
+                                "message_delta",
+                                serde_json::json!({
+                                    "type": "message_delta",
+                                    "delta": {"stop_reason": "end_turn", "stop_sequence": null},
+                                    "usage": {"output_tokens": usage.completion_tokens}
+                                }),
+                            )))
+                            .await;
+                        let _ = tx
+                            .send(Ok(claude_sse(
+                                "message_stop",
+                                serde_json::json!({"type": "message_stop"}),
+                            )))
+                            .await;
+                    }
+                    continue;
+                }
+
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(payload) else {
+                    continue;
+                };
+                if value.get("usage").map(|u| !u.is_null()).unwrap_or(false) {
+                    usage = usage_from_body(&value);
+                }
+                let text = value
+                    .pointer("/choices/0/delta/content")
+                    .and_then(|c| c.as_str());
+                let finished = value
+                    .pointer("/choices/0/finish_reason")
+                    .map(|f| !f.is_null())
+                    .unwrap_or(false);
+
+                if !block_started {
+                    block_started = true;
+                    let _ = tx
+                        .send(Ok(claude_sse(
+                            "message_start",
+                            serde_json::json!({
+                                "type": "message_start",
+                                "message": {
+                                    "id": request_id, "type": "message", "role": "assistant",
+                                    "model": model, "content": [], "stop_reason": null,
+                                    "stop_sequence": null,
+                                    "usage": {"input_tokens": usage.prompt_tokens, "output_tokens": 0}
+                                }
+                            }),
+                        )))
+                        .await;
+                    let _ = tx
+                        .send(Ok(claude_sse(
+                            "content_block_start",
+                            serde_json::json!({
+                                "type": "content_block_start", "index": 0,
+                                "content_block": {"type": "text", "text": ""}
+                            }),
+                        )))
+                        .await;
+                }
+
+                if let Some(text) = text {
+                    if !text.is_empty() {
+                        let _ = tx
+                            .send(Ok(claude_sse(
+                                "content_block_delta",
+                                serde_json::json!({
+                                    "type": "content_block_delta", "index": 0,
+                                    "delta": {"type": "text_delta", "text": text}
+                                }),
+                            )))
+                            .await;
+                    }
+                }
+                if finished {
+                    let _ = tx
+                        .send(Ok(claude_sse(
+                            "content_block_stop",
+                            serde_json::json!({"type": "content_block_stop", "index": 0}),
+                        )))
+                        .await;
+                }
+            }
+        }
+
+        let quota = billing::calculate_quota(&usage, &price);
+        if let Err(e) = charge(&state, &auth, quota).await {
+            tracing::warn!(error = %e, request_id, "Claude 流式扣费失败");
+            return;
+        }
+        log_consume(
+            &state,
+            &auth,
+            channel_id,
+            &model,
+            &usage,
+            quota,
+            started.elapsed().as_secs() as i32,
+            true,
+            &request_id,
+        )
+        .await;
+    });
+
+    let body_stream = futures_util::stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|item| (item, rx))
+    });
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(Body::from_stream(body_stream))
+        .unwrap_or_else(|_| {
+            relay_fail(
+                AppError::Internal("构造流式响应失败".into()),
+                RelayFormat::Claude,
+            )
+        })
 }
 
 /// 从 SSE 字节里扫描 `usage`(OpenAI 流式在 `stream_options.include_usage` 下
