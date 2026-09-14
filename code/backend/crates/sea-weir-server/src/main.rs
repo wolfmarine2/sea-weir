@@ -214,6 +214,21 @@ fn build_router(state: Arc<ServerState>) -> Router {
         .route("/api/user/logout", get(handlers::user::logout))
         // 受保护:本人信息(UserAuth + New-Api-User 防串号)
         .route("/api/user/self", get(handlers::user::self_info))
+        // 用户管理(AdminAuth;访问控制,不含充值)
+        .route(
+            "/api/user/",
+            get(handlers::user::admin_list)
+                .post(handlers::user::admin_create)
+                .put(handlers::user::admin_update),
+        )
+        .route(
+            "/api/user",
+            get(handlers::user::admin_list).put(handlers::user::admin_update),
+        )
+        .route(
+            "/api/user/{id}",
+            get(handlers::user::admin_get).delete(handlers::user::admin_delete),
+        )
         // 令牌管理(UserAuth)。契约:PUT 用 /api/token/(id 在 body),DELETE 用 /:id
         .route(
             "/api/token/",

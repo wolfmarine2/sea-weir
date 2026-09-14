@@ -194,6 +194,73 @@ impl crate::traits::UserRepository for PgUserRepository {
         Ok(())
     }
 
+    async fn list_paged(&self, offset: i64, limit: i64) -> AppResult<Vec<User>> {
+        let sql = format!(
+            "SELECT {USER_COLUMNS} FROM users WHERE deleted_at IS NULL \
+             ORDER BY id DESC OFFSET $1 LIMIT $2"
+        );
+        let rows: Vec<UserRow> = sqlx::query_as(&sql)
+            .bind(offset)
+            .bind(limit)
+            .fetch_all(self.pool())
+            .await
+            .map_err(db_err)?;
+        Ok(rows.into_iter().map(UserRow::into_domain).collect())
+    }
+
+    async fn count(&self) -> AppResult<i64> {
+        let (count,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM users WHERE deleted_at IS NULL")
+                .fetch_one(self.pool())
+                .await
+                .map_err(db_err)?;
+        Ok(count)
+    }
+
+    async fn exists_username(&self, username: &str) -> AppResult<bool> {
+        let (exists,): (bool,) = sqlx::query_as(
+            "SELECT EXISTS(SELECT 1 FROM users WHERE username = $1 AND deleted_at IS NULL)",
+        )
+        .bind(username)
+        .fetch_one(self.pool())
+        .await
+        .map_err(db_err)?;
+        Ok(exists)
+    }
+
+    async fn update_admin_fields(
+        &self,
+        id: i64,
+        role: i32,
+        status: i32,
+        display_name: &str,
+        group: &str,
+    ) -> AppResult<bool> {
+        let result = sqlx::query(
+            r#"UPDATE users SET role = $1, status = $2, display_name = $3, "group" = $4
+               WHERE id = $5 AND deleted_at IS NULL"#,
+        )
+        .bind(role as i64)
+        .bind(status as i64)
+        .bind(display_name)
+        .bind(group)
+        .bind(id)
+        .execute(self.pool())
+        .await
+        .map_err(db_err)?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn set_password(&self, id: i64, password_hash: &str) -> AppResult<()> {
+        sqlx::query("UPDATE users SET password = $1 WHERE id = $2 AND deleted_at IS NULL")
+            .bind(password_hash)
+            .bind(id)
+            .execute(self.pool())
+            .await
+            .map_err(db_err)?;
+        Ok(())
+    }
+
     async fn create(
         &self,
         username: &str,

@@ -16,6 +16,7 @@ import AppLayout from '@/layouts/AppLayout';
 import AuthLayout from '@/layouts/AuthLayout';
 import ChannelPage from '@/pages/admin/ChannelPage';
 import SettingPage from '@/pages/admin/SettingPage';
+import UserPage from '@/pages/admin/UserPage';
 import Login from '@/pages/auth/Login';
 import LogPage from '@/pages/console/LogPage';
 import TokenPage from '@/pages/console/TokenPage';
@@ -59,6 +60,14 @@ export const router = createBrowserRouter([
         element: (
           <RequireRole minRole={100}>
             <SettingPage />
+          </RequireRole>
+        ),
+      },
+      {
+        path: 'admin/user',
+        element: (
+          <RequireRole minRole={10}>
+            <UserPage />
           </RequireRole>
         ),
       },

@@ -26,6 +26,26 @@ pub trait UserRepository: Send + Sync {
     async fn update_status(&self, id: i64, status: i32) -> AppResult<()>;
     async fn soft_delete(&self, id: i64) -> AppResult<()>;
 
+    /// 管理面分页列表(不含已软删除)。
+    async fn list_paged(&self, offset: i64, limit: i64) -> AppResult<Vec<User>>;
+    async fn count(&self) -> AppResult<i64>;
+    /// 用户名是否已存在(创建前置校验)。
+    async fn exists_username(&self, username: &str) -> AppResult<bool>;
+
+    /// 管理面更新:角色/状态/显示名/分组。
+    /// 返回是否命中(0 行 = 用户不存在)。
+    async fn update_admin_fields(
+        &self,
+        id: i64,
+        role: i32,
+        status: i32,
+        display_name: &str,
+        group: &str,
+    ) -> AppResult<bool>;
+
+    /// 重置密码(bcrypt 哈希)。
+    async fn set_password(&self, id: i64, password_hash: &str) -> AppResult<()>;
+
     /// 创建用户(首装 root / 注册)。`password_hash` 为 bcrypt 哈希。
     ///
     /// - 调用方负责唯一性:username 冲突由唯一索引兜底,返回 `AppError::Database`。
