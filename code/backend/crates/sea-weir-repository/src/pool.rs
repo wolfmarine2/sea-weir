@@ -141,8 +141,9 @@ async fn ensure_compatible_database(dsn: &str) -> AppResult<()> {
 /// 以维护库 `postgres` 连接重建目标库。要求 DSN 账号具备 CREATEDB 权限;
 /// 权限不足或无法连维护库时返回可直接照做的排查信息。
 ///
-/// 顺序上先建"探测库"确认当前 openGauss 接受的 `DBCOMPATIBILITY` 字面量,再删目标库,
-/// 避免出现"目标库已删、却因字面量不被支持而建不回来"的空窗。
+/// 两处并发防护:进入时取咨询锁串行化多副本;完成判定不看"我这条 DDL 成没成功",
+/// 而看"目标库现在是不是 PG 语义",因此别的副本/部署脚本抢先建好时本副本同样算成功、
+/// 不会降级。字面量先用探测库验证,避免"删了目标库却建不回来"。
 async fn rebuild_as_pg_compatible(opts: &PgConnectOptions, db_name: &str) -> AppResult<()> {
     let mut maint = PgConnection::connect_with(&opts.clone().database("postgres"))
         .await
@@ -155,16 +156,22 @@ async fn rebuild_as_pg_compatible(opts: &PgConnectOptions, db_name: &str) -> App
 
     let ident = quote_ident(&mut maint, db_name).await?;
 
-    // 多副本并发自愈去重:重建前确认目标库仍是 Oracle 兼容,
+    // 多副本串行化:同一 key 的启动自愈互斥,避免两个 Pod 同时 DROP/CREATE 互相踩。
+    // 个别版本无此函数时也不报错,由下方的幂等判定兜底;会话级锁随连接关闭释放。
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(ADVISORY_LOCK_KEY)
+        .execute(&mut maint)
+        .await
+        .ok();
+
     // 已被其它副本重建则直接跳过,避免把刚建好的空库再删一次。
-    if db_compat(&mut maint, db_name).await.as_deref().is_some_and(|c| c != "A") {
-        tracing::info!(database = %db_name, "目标库已被其它副本重建为兼容模式,跳过自愈");
+    if skip_if_rebuilt(&mut maint, db_name).await {
         maint.close().await.ok();
         return Ok(());
     }
 
     // openGauss 各版本对 DBCOMPATIBILITY 字面量支持不一:'PG' 与 'D' 均表示 PostgreSQL。
-    // 用一次性探测库逐个验证,取第一个可用者;探测库名带进程号,避免多副本互相覆盖。
+    // 用一次性探测库逐个验证,取第一个可用者;探测库名含时间戳,避免多副本同名冲突。
     let probe_name = probe_db_name(db_name);
     let probe_ident = quote_ident(&mut maint, &probe_name).await?;
     let mut last_err = String::new();
@@ -197,42 +204,62 @@ async fn rebuild_as_pg_compatible(opts: &PgConnectOptions, db_name: &str) -> App
         .await
         .ok();
 
-    // 探测期间(数十至数百毫秒)另一副本可能已完成重建,删库前最后确认一次。
-    if db_compat(&mut maint, db_name).await.as_deref().is_some_and(|c| c != "A") {
-        tracing::info!(database = %db_name, "目标库已被其它副本重建为兼容模式,跳过自愈");
+    // 探测期间另一副本/部署脚本可能已完成重建,删库前最后一次确认。
+    if skip_if_rebuilt(&mut maint, db_name).await {
         maint.close().await.ok();
         return Ok(());
     }
 
-    // 断开目标库上的其它连接(另一副本可能仍连着目标库)。
-    sqlx::query(
-        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
-         WHERE datname = $1 AND pid <> pg_backend_pid()",
-    )
-    .bind(db_name)
-    .execute(&mut maint)
-    .await
-    .ok();
+    // DROP 前断开目标库上的其它连接;仍被占用时短暂等待后重试。
+    let mut drop_err = None;
+    for attempt in 0..3 {
+        terminate_backends(&mut maint, db_name).await;
+        match sqlx::query(&format!("DROP DATABASE IF EXISTS {ident}"))
+            .execute(&mut maint)
+            .await
+        {
+            Ok(_) => {
+                drop_err = None;
+                break;
+            }
+            Err(e) => {
+                drop_err = Some(e.to_string());
+                if attempt < 2 {
+                    // 启动期一次性路径,短暂阻塞可接受(tokio 非本 crate 运行时依赖)。
+                    std::thread::sleep(Duration::from_millis(300));
+                }
+            }
+        }
+    }
+    if let Some(e) = drop_err {
+        // 另一种可能:别的实例已把库删了又建好 —— 目标库现在是 PG 语义即算完成。
+        if target_is_pg_compatible(opts).await {
+            tracing::info!(database = %db_name, "DROP 未成功但目标库已为 PG 兼容(其它实例已重建),视为完成");
+            maint.close().await.ok();
+            return Ok(());
+        }
+        return Err(AppError::Database(format!(
+            "自动重建失败(DROP DATABASE {db_name} 需 CREATEDB 权限或库仍被占用): {e};\
+             请用超级用户执行 `DROP DATABASE {db_name}; CREATE DATABASE {db_name} DBCOMPATIBILITY '{compat}';`"
+        )));
+    }
 
-    sqlx::query(&format!("DROP DATABASE IF EXISTS {ident}"))
+    if let Err(e) = sqlx::query(&format!("CREATE DATABASE {ident} DBCOMPATIBILITY '{compat}'"))
         .execute(&mut maint)
         .await
-        .map_err(|e| {
-            AppError::Database(format!(
-                "自动重建失败(DROP DATABASE {db_name} 需 CREATEDB 权限): {e};\
-                 请用超级用户执行 `DROP DATABASE {db_name}; CREATE DATABASE {db_name} DBCOMPATIBILITY 'PG';`"
-            ))
-        })?;
-
-    sqlx::query(&format!("CREATE DATABASE {ident} DBCOMPATIBILITY '{compat}'"))
-        .execute(&mut maint)
-        .await
-        .map_err(|e| {
-            AppError::Database(format!(
-                "自动重建失败(CREATE DATABASE {db_name} 需 CREATEDB 权限): {e};\
-                 请用超级用户执行 `CREATE DATABASE {db_name} DBCOMPATIBILITY '{compat}';`"
-            ))
-        })?;
+    {
+        // CREATE 报错最常见的原因是另一实例抢先建好了同名库(duplicate key):只要目标库
+        // 现在可连且为 PG 语义,就是期望结果,不应让本副本降级。
+        if target_is_pg_compatible(opts).await {
+            tracing::info!(database = %db_name, "目标库已由其它实例创建(PG 兼容),视为完成");
+            maint.close().await.ok();
+            return Ok(());
+        }
+        return Err(AppError::Database(format!(
+            "自动重建失败(CREATE DATABASE {db_name} 需 CREATEDB 权限): {e};\
+             请用超级用户执行 `CREATE DATABASE {db_name} DBCOMPATIBILITY '{compat}';`"
+        )));
+    }
 
     maint.close().await.ok();
     tracing::warn!(
@@ -241,6 +268,41 @@ async fn rebuild_as_pg_compatible(opts: &PgConnectOptions, db_name: &str) -> App
         "检测到 Oracle 兼容模式空库,已自动重建为 PostgreSQL 兼容(兼容模式建库后不可改)"
     );
     Ok(())
+}
+
+/// 启动自愈的咨询锁 key(ASCII "seaweir"),多副本共用同一 key 以串行化重建。
+const ADVISORY_LOCK_KEY: i64 = 0x7365_6177_6569_72;
+
+/// 目标库已被(其它实例)重建为非 Oracle 兼容时返回 true。
+async fn skip_if_rebuilt(conn: &mut PgConnection, db_name: &str) -> bool {
+    let rebuilt = db_compat(conn, db_name).await.as_deref().is_some_and(|c| c != "A");
+    if rebuilt {
+        tracing::info!(database = %db_name, "目标库已被其它实例重建为兼容模式,跳过自愈");
+    }
+    rebuilt
+}
+
+/// 断开目标库上的其它连接,使 DROP DATABASE 不被占用。
+async fn terminate_backends(conn: &mut PgConnection, db_name: &str) {
+    sqlx::query(
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
+         WHERE datname = $1 AND pid <> pg_backend_pid()",
+    )
+    .bind(db_name)
+    .execute(&mut *conn)
+    .await
+    .ok();
+}
+
+/// 目标库当前是否可连且为 PG 语义(空串非 NULL)。用于"其它实例抢先完成重建"时的幂等判定。
+async fn target_is_pg_compatible(opts: &PgConnectOptions) -> bool {
+    let Ok(mut conn) = PgConnection::connect_with(opts).await else {
+        return false;
+    };
+    let empty_is_null: Result<bool, sqlx::Error> =
+        sqlx::query_scalar("SELECT '' IS NULL").fetch_one(&mut conn).await;
+    conn.close().await.ok();
+    matches!(empty_is_null, Ok(false))
 }
 
 /// 用数据库端 `quote_ident` 生成安全标识符,避免库名直接拼接 SQL。
@@ -262,14 +324,22 @@ async fn db_compat(conn: &mut PgConnection, db_name: &str) -> Option<String> {
         .flatten()
 }
 
-/// 探测库名：openGauss 标识符上限 63 字节，故前缀按字节截到 40，
-/// 再拼 `_probe_<pid>`（≤54 字节）。`pop()` 保证不切断多字节字符。
+/// 探测库名。openGauss 标识符上限 63 字节:前缀按字节截到 24,再拼
+/// `_probe_<pid>_<纳秒时间戳>_<序号>`(≤59 字节)。容器内 PID 恒为 1,故时间戳+序号
+/// 才是跨副本区分项;`pop()` 保证不切断多字节字符。
 fn probe_db_name(db_name: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
     let mut base = db_name.to_string();
-    while base.len() > 40 {
+    while base.len() > 24 {
         base.pop();
     }
-    format!("{base}_probe_{}", std::process::id())
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos() % 1_000_000_000_000);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("{base}_probe_{}_{nonce}_{seq}", std::process::id())
 }
 
 /// Repository 层共享上下文:连接池 + 缓存客户端。
@@ -438,14 +508,16 @@ mod tests {
         assert!(matches!(r, Err(AppError::Database(_))), "非法 DSN 应报错: {r:?}");
     }
 
-    /// 探测库名带进程号且不超过 63 字节标识符上限;多字节库名不切断字符。
+    /// 探测库名带进程号与时间戳、不超过 63 字节标识符上限;多字节库名不切断字符。
     #[test]
     fn probe_db_name_is_bounded() {
-        assert!(probe_db_name("sea_weir").ends_with(&format!("_probe_{}", std::process::id())));
-        let long = probe_db_name(&"x".repeat(80));
-        assert!(long.len() <= 63, "probe 名应 ≤ 63 字节: {long}");
+        let a = probe_db_name("sea_weir");
+        assert!(a.contains(&format!("_probe_{}_", std::process::id())));
+        assert!(probe_db_name(&"x".repeat(80)).len() <= 63);
         let wide = probe_db_name(&"数据".repeat(40));
         assert!(wide.len() <= 63, "多字节库名应 ≤ 63 字节: {wide}");
         assert!(wide.is_char_boundary(wide.len()));
+        // 同一进程连续调用也必须不同名,否则多副本(PID 恒为 1)会撞名。
+        assert_ne!(probe_db_name("sea_weir"), a);
     }
 }
