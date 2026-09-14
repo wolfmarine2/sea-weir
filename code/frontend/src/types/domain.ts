@@ -126,6 +126,10 @@ export interface ChannelPayload {
   auto_ban?: number | undefined;
   test_model?: string | undefined;
   tag?: string | undefined;
+  /** 上游请求参数改写(见后端 apply_param_override)。 */
+  param_override?: unknown;
+  /** 上游请求头改写;值中 `{api_key}` 替换为渠道密钥。 */
+  header_override?: unknown;
 }
 
 /** 消费日志。与后端 `sea_weir_types::domain::Log` 一致。 */

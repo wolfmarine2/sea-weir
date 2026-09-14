@@ -1,8 +1,8 @@
 /**
- * 管理端-渠道。列表 / 创建 / 启停 / 删除(AdminAuth)。
+ * 管理端-渠道。列表 / 创建 / 编辑 / 启停 / 刷新余额 / 测试 / 拉取模型 / 删除(AdminAuth)。
  *
- * 契约:列表不回传渠道密钥;更新不传 key 时后端沿用原密钥。
- * 待补:批量/标签、多 key 管理、测试渠道、余额探测、上游模型拉取。
+ * 契约:列表不回传渠道密钥;编辑不传 key 时后端沿用原密钥。
+ * 支持渠道级 param_override(上游请求参数改写)与 header_override(自定义 header,支持 {api_key})。
  */
 import { useCallback, useState } from 'react';
 import {
@@ -32,13 +32,15 @@ type ChannelFilters = Record<string, never>;
 interface ChannelForm {
   name: string;
   type: number;
-  key?: string;
+  key?: string | undefined;
   models: string;
   group: string;
-  base_url?: string;
-  priority?: number;
-  weight?: number;
+  base_url?: string | undefined;
+  priority?: number | undefined;
+  weight?: number | undefined;
   enabled: boolean;
+  param_override?: string | undefined;
+  header_override?: string | undefined;
 }
 
 const STATUS: Record<number, { color: string; text: string }> = {
@@ -47,10 +49,30 @@ const STATUS: Record<number, { color: string; text: string }> = {
   3: { color: 'orange', text: '自动禁用' },
 };
 
+const PARAM_HINT = '{"max_tokens":4096,"stream_options":null} 或 {"operations":[{"mode":"set","path":"a.b","value":1}]}';
+const HEADER_HINT = '{"X-Custom":"value","Authorization":"Bearer {api_key}"}';
+
+function isJson(text: string | undefined): boolean {
+  const t = (text ?? '').trim();
+  if (t === '') return true;
+  try {
+    JSON.parse(t);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function parseJson(text: string | undefined): unknown {
+  const t = (text ?? '').trim();
+  return t === '' ? undefined : JSON.parse(t);
+}
+
 export default function ChannelPage() {
   const { message, modal } = AntApp.useApp();
   const [form] = Form.useForm<ChannelForm>();
   const [modalOpen, setModalOpen] = useState(false);
+  const [editing, setEditing] = useState<ChannelItem | null>(null);
   const [saving, setSaving] = useState(false);
 
   const fetcher = useCallback(
@@ -59,7 +81,35 @@ export default function ChannelPage() {
   );
   const table = useTableData<ChannelItem, ChannelFilters>({ fetcher, initialFilters: {} });
 
-  const onCreate = async (values: ChannelForm) => {
+  const openCreate = () => {
+    setEditing(null);
+    form.resetFields();
+    setModalOpen(true);
+  };
+
+  const openEdit = (record: ChannelItem) => {
+    setEditing(record);
+    form.setFieldsValue({
+      name: record.name,
+      type: record.type,
+      key: undefined,
+      models: record.models,
+      group: record.group,
+      base_url: record.base_url ?? undefined,
+      priority: record.priority,
+      weight: record.weight,
+      enabled: record.status === 1,
+      param_override: record.param_override
+        ? JSON.stringify(record.param_override, null, 2)
+        : undefined,
+      header_override: record.header_override
+        ? JSON.stringify(record.header_override, null, 2)
+        : undefined,
+    });
+    setModalOpen(true);
+  };
+
+  const onSubmit = async (values: ChannelForm) => {
     setSaving(true);
     try {
       const payload: ChannelPayload = {
@@ -67,19 +117,25 @@ export default function ChannelPage() {
         name: values.name,
         models: values.models,
         group: values.group,
-        key: values.key,
+        status: values.enabled ? 1 : 2,
         base_url: values.base_url,
         priority: values.priority,
         weight: values.weight,
-        status: values.enabled ? 1 : 2,
+        param_override: parseJson(values.param_override),
+        header_override: parseJson(values.header_override),
       };
-      await api.channel.create(payload);
+      if (editing) {
+        await api.channel.update({ ...payload, id: editing.id });
+        message.success('渠道已更新');
+      } else {
+        await api.channel.create({ ...payload, key: values.key });
+        message.success('渠道已创建');
+      }
       setModalOpen(false);
       form.resetFields();
-      message.success('渠道已创建');
       table.refresh();
     } catch (e) {
-      message.error(e instanceof Error ? e.message : '创建失败');
+      message.error(e instanceof Error ? e.message : '保存失败');
     } finally {
       setSaving(false);
     }
@@ -153,7 +209,11 @@ export default function ChannelPage() {
       modal.confirm({
         title: `上游模型列表(${models.length} 个)`,
         width: 560,
-        content: <Typography.Paragraph copyable={{ text: models.join(',') }}>{models.join(', ')}</Typography.Paragraph>,
+        content: (
+          <Typography.Paragraph copyable={{ text: models.join(',') }}>
+            {models.join(', ')}
+          </Typography.Paragraph>
+        ),
         okText: '写入渠道模型',
         cancelText: '关闭',
         onOk: async () => {
@@ -190,7 +250,11 @@ export default function ChannelPage() {
     {
       title: '模型',
       dataIndex: 'models',
-      render: (value: string) => <Typography.Text ellipsis style={{ maxWidth: 260 }}>{value}</Typography.Text>,
+      render: (value: string) => (
+        <Typography.Text ellipsis style={{ maxWidth: 240 }}>
+          {value}
+        </Typography.Text>
+      ),
     },
     { title: 'Key 数', dataIndex: 'key_count', width: 80 },
     { title: '优先级', dataIndex: 'priority', width: 80 },
@@ -198,14 +262,14 @@ export default function ChannelPage() {
     {
       title: '余额(USD)',
       dataIndex: 'balance',
-      width: 120,
+      width: 130,
       render: (value: number, record) => (
         <Typography.Text>
           ${value.toFixed(2)}
           {record.balance_updated_time > 0 && (
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               {' '}
-              ({dayjs.unix(record.balance_updated_time as number).format('MM-DD HH:mm')})
+              ({dayjs.unix(record.balance_updated_time).format('MM-DD HH:mm')})
             </Typography.Text>
           )}
         </Typography.Text>
@@ -215,7 +279,10 @@ export default function ChannelPage() {
       title: '操作',
       key: 'actions',
       render: (_value, record) => (
-        <Space>
+        <Space wrap>
+          <Button size="small" onClick={() => openEdit(record)}>
+            编辑
+          </Button>
           <Button size="small" onClick={() => void onToggle(record)}>
             {record.status === 1 ? '禁用' : '启用'}
           </Button>
@@ -244,7 +311,7 @@ export default function ChannelPage() {
       extra={
         <Space>
           <Button onClick={() => void onRefreshAll()}>刷新全部余额</Button>
-          <Button type="primary" onClick={() => setModalOpen(true)}>
+          <Button type="primary" onClick={openCreate}>
             创建渠道
           </Button>
         </Space>
@@ -264,17 +331,18 @@ export default function ChannelPage() {
       />
 
       <Modal
-        title="创建渠道"
+        title={editing ? `编辑渠道:${editing.name}` : '创建渠道'}
         open={modalOpen}
         onCancel={() => setModalOpen(false)}
         onOk={() => form.submit()}
         confirmLoading={saving}
         destroyOnClose
+        width={640}
       >
         <Form
           form={form}
           layout="vertical"
-          onFinish={onCreate}
+          onFinish={onSubmit}
           initialValues={{ type: 1, enabled: true, group: 'default', priority: 0, weight: 0 }}
         >
           <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入名称' }]}>
@@ -285,23 +353,23 @@ export default function ChannelPage() {
           </Form.Item>
           <Form.Item
             name="key"
-            label="密钥(多 key 换行分隔)"
-            rules={[{ required: true, message: '请输入密钥' }]}
+            label={editing ? '密钥(留空则沿用原密钥)' : '密钥(多 key 换行分隔)'}
+            rules={editing ? [] : [{ required: true, message: '请输入密钥' }]}
           >
-            <Input.TextArea rows={3} placeholder="sk-xxx" />
+            <Input.TextArea rows={2} placeholder="sk-xxx" />
           </Form.Item>
           <Form.Item
             name="models"
             label="模型(逗号分隔)"
             rules={[{ required: true, message: '请输入模型' }]}
           >
-            <Input placeholder="gpt-4o,gpt-4o-mini" />
+            <Input placeholder="gpt-4o,deepseek-chat" />
           </Form.Item>
           <Form.Item name="group" label="分组(逗号分隔)" rules={[{ required: true }]}>
             <Input placeholder="default,vip" />
           </Form.Item>
           <Form.Item name="base_url" label="Base URL">
-            <Input placeholder="https://api.openai.com" />
+            <Input placeholder="https://api.deepseek.com" />
           </Form.Item>
           <Space size="large">
             <Form.Item name="priority" label="优先级">
@@ -314,6 +382,20 @@ export default function ChannelPage() {
               <Switch />
             </Form.Item>
           </Space>
+          <Form.Item
+            name="param_override"
+            label="请求参数改写 param_override(JSON)"
+            rules={[{ validator: (_r, v: unknown) => (isJson(v as string) ? Promise.resolve() : Promise.reject(new Error('必须是合法 JSON'))) }]}
+          >
+            <Input.TextArea rows={3} placeholder={PARAM_HINT} />
+          </Form.Item>
+          <Form.Item
+            name="header_override"
+            label="请求头改写 header_override(JSON)"
+            rules={[{ validator: (_r, v: unknown) => (isJson(v as string) ? Promise.resolve() : Promise.reject(new Error('必须是合法 JSON'))) }]}
+          >
+            <Input.TextArea rows={3} placeholder={HEADER_HINT} />
+          </Form.Item>
         </Form>
       </Modal>
     </Card>
