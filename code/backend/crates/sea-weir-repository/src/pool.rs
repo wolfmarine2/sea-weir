@@ -164,8 +164,9 @@ async fn rebuild_as_pg_compatible(opts: &PgConnectOptions, db_name: &str) -> App
         .await
         .ok();
 
-    // 已被其它副本重建则直接跳过,避免把刚建好的空库再删一次。
-    if skip_if_rebuilt(&mut maint, db_name).await {
+    // 已被其它实例重建则直接跳过,避免把刚建好的空库再删一次(语义判定,不依赖专有列)。
+    if target_is_pg_compatible(opts).await {
+        tracing::info!(database = %db_name, "目标库已为 PG 兼容,跳过自愈");
         maint.close().await.ok();
         return Ok(());
     }
@@ -205,7 +206,8 @@ async fn rebuild_as_pg_compatible(opts: &PgConnectOptions, db_name: &str) -> App
         .ok();
 
     // 探测期间另一副本/部署脚本可能已完成重建,删库前最后一次确认。
-    if skip_if_rebuilt(&mut maint, db_name).await {
+    if target_is_pg_compatible(opts).await {
+        tracing::info!(database = %db_name, "目标库已为 PG 兼容,跳过自愈");
         maint.close().await.ok();
         return Ok(());
     }
@@ -273,15 +275,6 @@ async fn rebuild_as_pg_compatible(opts: &PgConnectOptions, db_name: &str) -> App
 /// 启动自愈的咨询锁 key(ASCII "seaweir"),多副本共用同一 key 以串行化重建。
 const ADVISORY_LOCK_KEY: i64 = 0x7365_6177_6569_72;
 
-/// 目标库已被(其它实例)重建为非 Oracle 兼容时返回 true。
-async fn skip_if_rebuilt(conn: &mut PgConnection, db_name: &str) -> bool {
-    let rebuilt = db_compat(conn, db_name).await.as_deref().is_some_and(|c| c != "A");
-    if rebuilt {
-        tracing::info!(database = %db_name, "目标库已被其它实例重建为兼容模式,跳过自愈");
-    }
-    rebuilt
-}
-
 /// 断开目标库上的其它连接,使 DROP DATABASE 不被占用。
 async fn terminate_backends(conn: &mut PgConnection, db_name: &str) {
     sqlx::query(
@@ -312,16 +305,6 @@ async fn quote_ident(conn: &mut PgConnection, name: &str) -> AppResult<String> {
         .fetch_one(&mut *conn)
         .await
         .map_err(|e| AppError::Database(format!("构造数据库标识符失败: {e}")))
-}
-
-/// 读取目标库的兼容模式(openGauss 专有列)。查询失败返回 None,按"未知"处理。
-async fn db_compat(conn: &mut PgConnection, db_name: &str) -> Option<String> {
-    sqlx::query_scalar("SELECT datcompatibility FROM pg_database WHERE datname = $1")
-        .bind(db_name)
-        .fetch_optional(&mut *conn)
-        .await
-        .ok()
-        .flatten()
 }
 
 /// 探测库名。openGauss 标识符上限 63 字节:前缀按字节截到 24,再拼
