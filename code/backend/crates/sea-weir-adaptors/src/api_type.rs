@@ -85,50 +85,62 @@ impl ApiType {
         Self::Codex,
     ];
 
+    /// ChannelType ↔ ApiType 登记表(new-api `common/api_type.go` `ChannelType2APIType` 的镜像)。
+    /// 两个方向都由它派生,避免下发列表与解析逻辑漂移。
+    pub const CHANNEL_TYPE_MAP: &'static [(i32, ApiType)] = &[
+        (1, ApiType::OpenAi),
+        (4, ApiType::Ollama),
+        (11, ApiType::PaLM),
+        (14, ApiType::Anthropic),
+        (15, ApiType::Baidu),
+        (16, ApiType::Zhipu),
+        (17, ApiType::Ali),
+        (18, ApiType::Xunfei),
+        (20, ApiType::OpenRouter),
+        (21, ApiType::AiProxyLibrary),
+        (23, ApiType::Tencent),
+        (24, ApiType::Gemini),
+        (25, ApiType::Moonshot),
+        (26, ApiType::ZhipuV4),
+        (27, ApiType::Perplexity),
+        (33, ApiType::Aws),
+        (34, ApiType::Cohere),
+        (35, ApiType::MiniMax),
+        (37, ApiType::Dify),
+        (38, ApiType::Jina),
+        (39, ApiType::Cloudflare),
+        (40, ApiType::SiliconFlow),
+        (41, ApiType::VertexAi),
+        (42, ApiType::Mistral),
+        (43, ApiType::DeepSeek),
+        (44, ApiType::MokaAi),
+        (45, ApiType::VolcEngine),
+        (46, ApiType::BaiduV2),
+        (47, ApiType::Xinference),
+        (48, ApiType::Xai),
+        (49, ApiType::Coze),
+        (51, ApiType::Jimeng),
+        (53, ApiType::Submodel),
+        (56, ApiType::Replicate),
+        (57, ApiType::Codex),
+    ];
+
     /// 渠道表 `type` 列(ChannelType)→ ApiType。
     ///
-    /// 与 new-api `common/api_type.go` `ChannelType2APIType` 一一对应;
-    /// 未登记的渠道类型返回 `None`(new-api 侧回落 OpenAI 并标记未识别)。
+    /// 未登记的渠道类型返回 `None`(调用方回落 OpenAI 并标记未识别)。
     pub fn from_channel_type(channel_type: i32) -> Option<Self> {
-        let api_type = match channel_type {
-            1 => Self::OpenAi,
-            4 => Self::Ollama,
-            11 => Self::PaLM,
-            14 => Self::Anthropic,
-            15 => Self::Baidu,
-            16 => Self::Zhipu,
-            17 => Self::Ali,
-            18 => Self::Xunfei,
-            20 => Self::OpenRouter,
-            21 => Self::AiProxyLibrary,
-            23 => Self::Tencent,
-            24 => Self::Gemini,
-            25 => Self::Moonshot,
-            26 => Self::ZhipuV4,
-            27 => Self::Perplexity,
-            33 => Self::Aws,
-            34 => Self::Cohere,
-            35 => Self::MiniMax,
-            37 => Self::Dify,
-            38 => Self::Jina,
-            39 => Self::Cloudflare,
-            40 => Self::SiliconFlow,
-            41 => Self::VertexAi,
-            42 => Self::Mistral,
-            43 => Self::DeepSeek,
-            44 => Self::MokaAi,
-            45 => Self::VolcEngine,
-            46 => Self::BaiduV2,
-            47 => Self::Xinference,
-            48 => Self::Xai,
-            49 => Self::Coze,
-            51 => Self::Jimeng,
-            53 => Self::Submodel,
-            56 => Self::Replicate,
-            57 => Self::Codex,
-            _ => return None,
-        };
-        Some(api_type)
+        Self::CHANNEL_TYPE_MAP
+            .iter()
+            .find(|(c, _)| *c == channel_type)
+            .map(|(_, api_type)| *api_type)
+    }
+
+    /// ApiType → 渠道表 `type` 列(反向映射)。
+    pub fn channel_type(self) -> Option<i32> {
+        Self::CHANNEL_TYPE_MAP
+            .iter()
+            .find(|(_, api_type)| *api_type == self)
+            .map(|(c, _)| *c)
     }
 }
 
@@ -165,9 +177,42 @@ impl TaskPlatform {
 
 #[cfg(test)]
 mod tests {
-    // TDD 入口:
-    // - [ ] ApiType::ALL.len() == 35(数量锁死,防止漏实现)
-    // - [ ] TaskPlatform::ALL.len() == 10
-    // - [ ] from_channel_type 覆盖 new-api 全部渠道类型常量,未知值返回 None
-    // - [ ] 判别值与 Go 侧 iota 顺序一致(渠道表存的是数字,不能错位)
+    use super::*;
+
+    #[test]
+    fn all_types_are_registered_and_round_trip() {
+        assert_eq!(ApiType::ALL.len(), 35, "数量锁死,防止漏实现");
+        assert_eq!(TaskPlatform::ALL.len(), 10);
+        for api_type in ApiType::ALL {
+            let ct = api_type
+                .channel_type()
+                .unwrap_or_else(|| panic!("{api_type:?} 缺少 ChannelType 登记"));
+            assert_eq!(
+                ApiType::from_channel_type(ct),
+                Some(*api_type),
+                "{api_type:?} 双向映射不一致"
+            );
+        }
+    }
+
+    #[test]
+    fn channel_type_map_has_no_duplicates() {
+        let mut types: Vec<i32> = ApiType::CHANNEL_TYPE_MAP.iter().map(|(c, _)| *c).collect();
+        types.sort_unstable();
+        types.dedup();
+        assert_eq!(types.len(), ApiType::CHANNEL_TYPE_MAP.len(), "ChannelType 有重复");
+        assert_eq!(
+            ApiType::CHANNEL_TYPE_MAP.len(),
+            ApiType::ALL.len(),
+            "每个 ApiType 应恰好登记一次"
+        );
+    }
+
+    #[test]
+    fn unknown_channel_type_returns_none() {
+        assert_eq!(ApiType::from_channel_type(9999), None);
+        assert_eq!(ApiType::from_channel_type(2), None, "2 未登记(历史上是 API2D)");
+        assert_eq!(ApiType::from_channel_type(1), Some(ApiType::OpenAi));
+        assert_eq!(ApiType::from_channel_type(43), Some(ApiType::DeepSeek));
+    }
 }

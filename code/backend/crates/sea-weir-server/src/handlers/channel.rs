@@ -42,6 +42,24 @@ fn channel_json(channel: Channel) -> serde_json::Value {
     value
 }
 
+/// `GET /api/channel/types`(AdminAuth):渠道类型目录,供表单下拉。
+///
+/// 返回 `{items: [{type, name, default_base_url}]}`,由适配器注册表的 ChannelType
+/// 登记表派生(与中继/余额探测的解析同源),避免前端硬编码编号。
+pub async fn types(_auth: AdminUser) -> Response {
+    let items: Vec<serde_json::Value> = sea_weir_adaptors::channel_type_catalog()
+        .into_iter()
+        .map(|(r#type, name, default_base_url)| {
+            serde_json::json!({
+                "type": r#type,
+                "name": name,
+                "default_base_url": default_base_url,
+            })
+        })
+        .collect();
+    response::ok(serde_json::json!({ "items": items, "total": items.len() }))
+}
+
 /// `GET /api/channel/`、`/search`:渠道分页(AdminAuth)。
 pub async fn list(
     State(state): State<Arc<ServerState>>,

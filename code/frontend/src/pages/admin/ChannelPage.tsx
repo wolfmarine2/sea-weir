@@ -4,7 +4,7 @@
  * 契约:列表不回传渠道密钥;编辑不传 key 时后端沿用原密钥。
  * 支持渠道级 param_override(上游请求参数改写)与 header_override(自定义 header,支持 {api_key})。
  */
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   App as AntApp,
   Button,
@@ -26,7 +26,7 @@ import dayjs from 'dayjs';
 import { api } from '@/api';
 import { DataTable } from '@/components/table';
 import { useTableData } from '@/hooks';
-import type { ChannelItem, ChannelPayload } from '@/types';
+import type { ChannelItem, ChannelPayload, ChannelTypeOption } from '@/types';
 
 type ChannelFilters = Record<string, never>;
 
@@ -111,6 +111,15 @@ export default function ChannelPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<ChannelItem | null>(null);
   const [saving, setSaving] = useState(false);
+  /** 渠道类型目录(后端下发);加载失败时退回数字输入,表单仍可用。 */
+  const [typeOptions, setTypeOptions] = useState<ChannelTypeOption[]>([]);
+
+  useEffect(() => {
+    api.channel
+      .types()
+      .then(({ items }) => setTypeOptions(items))
+      .catch(() => setTypeOptions([]));
+  }, []);
 
   const fetcher = useCallback(
     ({ p, page_size }: { p: number; page_size: number }) => api.channel.list({ p, page_size }),
@@ -387,8 +396,32 @@ export default function ChannelPage() {
           <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入名称' }]}>
             <Input />
           </Form.Item>
-          <Form.Item name="type" label="类型(ChannelType / ApiType)" rules={[{ required: true }]}>
-            <InputNumber min={0} style={{ width: '100%' }} />
+          <Form.Item
+            name="type"
+            label="类型(渠道平台)"
+            tooltip="渠道编号(ChannelType):标识上游是哪家平台,决定内置余额探测与「上游协议」留空时的推断。选中后会带出该平台的默认 Base URL。"
+            rules={[{ required: true, message: '请选择渠道类型' }]}
+          >
+            {typeOptions.length > 0 ? (
+              <Select
+                showSearch
+                optionFilterProp="label"
+                placeholder="搜索平台名或编号,如 DeepSeek / 43"
+                options={typeOptions.map((o) => ({
+                  value: o.type,
+                  label: `${o.type} — ${o.name}`,
+                }))}
+                onChange={(value: number) => {
+                  const opt = typeOptions.find((o) => o.type === value);
+                  if (opt?.default_base_url && !form.getFieldValue('base_url')) {
+                    form.setFieldValue('base_url', opt.default_base_url);
+                  }
+                }}
+              />
+            ) : (
+              // 目录拉取失败时退回数字输入,避免表单不可用。
+              <InputNumber min={0} style={{ width: '100%' }} placeholder="如 43" />
+            )}
           </Form.Item>
           <Form.Item
             name="key"

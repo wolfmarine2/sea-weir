@@ -1,10 +1,18 @@
 /** `channel` 域 API。端点清单见 doc/architecture/CONTRACTS.md 附录 A。 */
 import { request } from '@/api/client';
-import type { ChannelItem, ChannelPayload, PageInfo } from '@/types';
+import type { ChannelItem, ChannelPayload, ChannelTypeOption, PageInfo } from '@/types';
 
 /** `GET /api/channel/`:渠道分页(key 脱敏,AdminAuth)。 */
 export function list(params: { p: number; page_size: number }): Promise<PageInfo<ChannelItem>> {
   return request<PageInfo<ChannelItem>>({ url: '/api/channel/', method: 'get', params });
+}
+
+/** `GET /api/channel/types`:渠道类型目录(编号 + 展示名 + 默认 Base URL)。 */
+export function types(): Promise<{ items: ChannelTypeOption[]; total: number }> {
+  return request<{ items: ChannelTypeOption[]; total: number }>({
+    url: '/api/channel/types',
+    method: 'get',
+  });
 }
 
 /** `POST /api/channel/`:创建渠道并同步 abilities。 */

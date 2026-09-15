@@ -67,6 +67,23 @@ impl AdaptorRegistry {
     }
 }
 
+/// 渠道类型目录(管理面「类型」下拉用):`(ChannelType, 展示名, 默认 base_url)`。
+///
+/// 由 [`ApiType::CHANNEL_TYPE_MAP`] 与 [`sync_spec`] 派生,保证与解析/适配器元数据同源;
+/// 按 ChannelType 升序返回,便于表单稳定排序。
+pub fn channel_type_catalog() -> Vec<(i32, &'static str, &'static str)> {
+    let mut items: Vec<(i32, &'static str, &'static str)> = ApiType::ALL
+        .iter()
+        .filter_map(|api_type| {
+            let channel_type = api_type.channel_type()?;
+            let (name, default_base, _) = sync_spec(*api_type);
+            Some((channel_type, name, default_base))
+        })
+        .collect();
+    items.sort_by_key(|(channel_type, _, _)| *channel_type);
+    items
+}
+
 /// 同步渠道元数据:`(展示名, 默认 base_url, 协议族)`。
 ///
 /// 展示名进日志与前端,必须全表唯一(`TC-UNI-ADP-010`)。

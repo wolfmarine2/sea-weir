@@ -15,7 +15,7 @@ pub mod sync;
 pub mod task;
 
 pub use api_type::{ApiType, TaskPlatform};
-pub use registry::AdaptorRegistry;
+pub use registry::{channel_type_catalog, AdaptorRegistry};
 
 use async_trait::async_trait;
 use bytes::Bytes;

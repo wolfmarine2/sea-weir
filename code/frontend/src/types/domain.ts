@@ -203,3 +203,10 @@ export interface PrefillGroupPayload {
   items: string[];
   description?: string | undefined;
 }
+
+/** `GET /api/channel/types` 返回的渠道类型目录项。 */
+export interface ChannelTypeOption {
+  type: number;
+  name: string;
+  default_base_url: string;
+}
