@@ -29,20 +29,10 @@ impl DbPools {
             ensure_compatible_database(dsn).await?;
         }
 
-        let main = PgPoolOptions::new()
-            .max_connections(cfg.max_connections.max(1))
-            .acquire_timeout(Duration::from_secs(10))
-            .connect(&cfg.dsn)
-            .await
-            .map_err(|e| AppError::Database(format!("主库连接失败: {e}")))?;
+        let main = connect_pool(&cfg.dsn, cfg.max_connections, "主库").await?;
 
         let log = match log_dsn {
-            Some(dsn) => PgPoolOptions::new()
-                .max_connections(cfg.log_max_connections.max(1))
-                .acquire_timeout(Duration::from_secs(10))
-                .connect(dsn)
-                .await
-                .map_err(|e| AppError::Database(format!("日志库连接失败: {e}")))?,
+            Some(dsn) => connect_pool(dsn, cfg.log_max_connections, "日志库").await?,
             None => {
                 tracing::info!("database.log_dsn 为空,日志库复用主库连接池");
                 main.clone()
@@ -69,6 +59,49 @@ impl DbPools {
         tracing::info!("sqlx migrations 执行完成");
         Ok(())
     }
+}
+
+/// 建池,带有限重试。
+///
+/// 启动瞬间的一次性失败不值得直接降级:实测出现过库刚被重建(或 openGauss 在
+/// 处理 `CREATE DATABASE`)时主库连接报 `Operation not permitted (os error 1)`,
+/// 而同一次启动里的探测连接是通的 —— 稍等重试即可成功。
+async fn connect_pool(dsn: &str, max_connections: u32, label: &str) -> AppResult<sqlx::PgPool> {
+    const ATTEMPTS: u32 = 5;
+    let mut last = String::new();
+    for attempt in 1..=ATTEMPTS {
+        match PgPoolOptions::new()
+            .max_connections(max_connections.max(1))
+            .acquire_timeout(Duration::from_secs(10))
+            .connect(dsn)
+            .await
+        {
+            Ok(pool) => {
+                if attempt > 1 {
+                    tracing::info!(label, attempt, "{label}连接在第 {attempt} 次尝试后成功");
+                }
+                return Ok(pool);
+            }
+            Err(e) => {
+                last = e.to_string();
+                if attempt < ATTEMPTS {
+                    let backoff_ms = 500 * u64::from(attempt);
+                    tracing::warn!(
+                        label,
+                        attempt,
+                        error = %e,
+                        "{}连接失败,{backoff_ms}ms 后重试",
+                        label
+                    );
+                    // 启动期一次性路径;tokio 非本 crate 的直接依赖,故用同步 sleep。
+                    std::thread::sleep(Duration::from_millis(backoff_ms));
+                }
+            }
+        }
+    }
+    Err(AppError::Database(format!(
+        "{label}连接失败(已重试 {ATTEMPTS} 次): {last}"
+    )))
 }
 
 /// 校验库的空串语义。openGauss 以 `DBCOMPATIBILITY 'A'`(Oracle 兼容,默认值之一)建库时
@@ -172,9 +205,11 @@ async fn rebuild_as_pg_compatible(opts: &PgConnectOptions, db_name: &str) -> App
     }
 
     // openGauss 各版本对 DBCOMPATIBILITY 字面量支持不一:'PG' 与 'D' 均表示 PostgreSQL。
-    // 用一次性探测库逐个验证,取第一个可用者;探测库名含时间戳,避免多副本同名冲突。
+    // 关键:不能只看 CREATE 有没有报错 —— 要连到探测库实测空串语义(`'' IS NULL` 为假),
+    // 否则字面量被静默忽略时会反复重建目标库却不生效。
     let probe_name = probe_db_name(db_name);
     let probe_ident = quote_ident(&mut maint, &probe_name).await?;
+    let probe_opts = opts.clone().database(&probe_name);
     let mut last_err = String::new();
     let mut usable: Option<&str> = None;
     for compat in ["PG", "D"] {
@@ -186,17 +221,24 @@ async fn rebuild_as_pg_compatible(opts: &PgConnectOptions, db_name: &str) -> App
             .execute(&mut maint)
             .await
         {
-            Ok(_) => {
+            Ok(_) if target_is_pg_compatible(&probe_opts).await => {
                 usable = Some(compat);
                 break;
+            }
+            Ok(_) => {
+                last_err = format!("'{compat}' 建库成功但空串语义仍非 PG");
             }
             Err(e) => last_err = e.to_string(),
         }
     }
     let Some(compat) = usable else {
+        sqlx::query(&format!("DROP DATABASE IF EXISTS {probe_ident}"))
+            .execute(&mut maint)
+            .await
+            .ok();
         maint.close().await.ok();
         return Err(AppError::Database(format!(
-            "无法自动重建数据库 {db_name}:当前 openGauss 不接受 DBCOMPATIBILITY 'PG'/'D'({last_err});\
+            "无法自动重建数据库 {db_name}:试过 DBCOMPATIBILITY 'PG'/'D' 均未得到 PG 语义({last_err});\
              请用超级用户手工执行 `CREATE DATABASE {db_name} DBCOMPATIBILITY 'PG';`(见 data/00-init-database.sql)"
         )));
     };
@@ -260,6 +302,23 @@ async fn rebuild_as_pg_compatible(opts: &PgConnectOptions, db_name: &str) -> App
         return Err(AppError::Database(format!(
             "自动重建失败(CREATE DATABASE {db_name} 需 CREATEDB 权限): {e};\
              请用超级用户执行 `CREATE DATABASE {db_name} DBCOMPATIBILITY '{compat}';`"
+        )));
+    }
+
+    // 建库后再实测一次:若语义仍非 PG,宁可显式报错(带实际 datcompatibility),
+    // 也不要"看起来重建成功、下次启动又判定为 Oracle"地反复重建。
+    if !target_is_pg_compatible(opts).await {
+        let actual: Option<String> =
+            sqlx::query_scalar("SELECT datcompatibility FROM pg_database WHERE datname = $1")
+                .bind(db_name)
+                .fetch_optional(&mut maint)
+                .await
+                .ok()
+                .flatten();
+        maint.close().await.ok();
+        return Err(AppError::Database(format!(
+            "数据库 {db_name} 以 DBCOMPATIBILITY '{compat}' 重建后空串语义仍非 PG\
+             (datcompatibility={actual:?});请用超级用户手工重建该库(见 data/00-init-database.sql)"
         )));
     }
 
