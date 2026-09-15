@@ -261,7 +261,7 @@ quota.round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero)
 | `GET /api/models`(管理面 DashboardListModels) | UserAuth | 全量可用模型(看板) |
 | `/api/models` CRUD + `/sync_upstream*` + `/missing`(AdminAuth) | AdminAuth | 模型元数据 CRUD、上游同步、缺失模型(abilities 有而 models 无)检测 |
 | `/api/vendors` CRUD | AdminAuth | 厂商元数据 |
-| `GET /api/group/`、`/api/prefill_group` CRUD | AdminAuth | 分组列表、预填分组(model/tag/endpoint 三类) |
+| `/api/group/` GET/POST/PUT、`DELETE /api/group/:name`、`/api/prefill_group` CRUD | AdminAuth | 分组(倍率 `GroupRatio` + 用户可选 `UserUsableGroups`)与预填分组(model/tag/endpoint 三类) |
 | `GET /api/mj/self`、`GET /api/mj/`;`GET /api/task/self`、`GET /api/task/` | UserAuth / AdminAuth | Midjourney 与异步任务记录查询 |
 | `GET /api/data/`、`/users`(AdminAuth)、`/self`(UserAuth) | — | 额度消耗看板聚合数据(quota_data 按小时) |
 | `/api/deployments/**` | AdminAuth | io.net 集群部署管理(设置/CRUD/日志/容器/估价) |
@@ -511,7 +511,7 @@ GET `/`(AA)、DELETE `/`(AA)、GET `/search`(AA)、GET `/stat`(AA)、GET `/chann
 
 **A.1.14 倍率同步 `/api/ratio_sync`(2 条,RA)**:GET `/channels`、POST `/fetch`
 
-**A.1.15 分组(5 条,AA)**:GET `/api/group/`;`/api/prefill_group` GET `/`、POST `/`、PUT `/`、DELETE `/:id`
+**A.1.15 分组(8 条,AA)**:`/api/group/` GET `/`、POST `/`、PUT `/`、DELETE `/:name`;`/api/prefill_group` GET `/`、POST `/`、PUT `/`、DELETE `/:id`
 
 **A.1.16 模型与厂商(15 条,AA)**
 

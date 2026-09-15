@@ -156,3 +156,29 @@ export interface LogItem {
   ip: string | null;
   request_id: string | null;
 }
+
+/**
+ * 分组。不是独立表:名称与倍率来自选项 `GroupRatio`,用户可选分组与描述来自
+ * `UserUsableGroups`;`in_use` 表示已被渠道(abilities)引用。
+ */
+export interface GroupItem {
+  name: string;
+  /** 计费倍率。 */
+  ratio: number;
+  /** 展示名/描述(UserUsableGroups 的值)。 */
+  description: string;
+  /** 是否用户可选(在 UserUsableGroups 中)。 */
+  usable: boolean;
+  /** 是否已被渠道使用。 */
+  in_use: boolean;
+  /** 是否允许删除(default 与使用中不可删)。 */
+  deletable: boolean;
+}
+
+/** 分组创建/更新入参。更新时 name 为身份,ratio/description/usable 可变。 */
+export interface GroupPayload {
+  name: string;
+  ratio?: number | undefined;
+  description?: string | undefined;
+  usable?: boolean | undefined;
+}

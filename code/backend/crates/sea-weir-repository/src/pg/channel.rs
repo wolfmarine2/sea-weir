@@ -204,6 +204,16 @@ impl crate::traits::ChannelRepository for PgChannelRepository {
         Ok(rows.into_iter().map(|(m,)| m).collect())
     }
 
+    async fn list_group_names(&self) -> AppResult<Vec<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT DISTINCT \"group\" FROM abilities WHERE \"group\" <> '' ORDER BY \"group\"",
+        )
+        .fetch_all(self.pool())
+        .await
+        .map_err(db_err)?;
+        Ok(rows.into_iter().map(|(g,)| g).collect())
+    }
+
     async fn create(&self, channel: &Channel) -> AppResult<i64> {
         let now = chrono::Utc::now().timestamp();
         // 显式列出全部 NOT NULL 列(含 other / remark),不依赖列默认值。

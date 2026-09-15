@@ -305,6 +305,20 @@ fn build_router(state: Arc<ServerState>) -> Router {
             "/api/option",
             get(handlers::option::list).put(handlers::option::update),
         )
+        // 分组管理(AdminAuth):列表 / 新增 / 修改 / 删除
+        .route(
+            "/api/group/",
+            get(handlers::group::list)
+                .post(handlers::group::create)
+                .put(handlers::group::update),
+        )
+        .route(
+            "/api/group",
+            get(handlers::group::list)
+                .post(handlers::group::create)
+                .put(handlers::group::update),
+        )
+        .route("/api/group/{name}", delete(handlers::group::delete))
         // 中继面(TokenAuth / sk-token;已挂 IP 限流)
         .merge(relay)
         // K8s 探针

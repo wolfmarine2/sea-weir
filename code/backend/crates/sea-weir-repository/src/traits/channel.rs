@@ -23,6 +23,10 @@ pub trait ChannelRepository: Send + Sync {
     /// 全部可用模型名(去重;模型广场用,不区分分组)。
     async fn list_all_models(&self) -> AppResult<Vec<String>>;
 
+    /// 已被渠道使用(经 abilities 展开)的分组名(去重)。分组管理用于展示"使用中"的分组,
+    /// 并在删除分组前做引用保护。
+    async fn list_group_names(&self) -> AppResult<Vec<String>>;
+
     async fn create(&self, channel: &Channel) -> AppResult<i64>;
     async fn update(&self, channel: &Channel) -> AppResult<()>;
     async fn delete(&self, id: i64) -> AppResult<()>;

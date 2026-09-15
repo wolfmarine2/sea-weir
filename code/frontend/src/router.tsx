@@ -15,6 +15,7 @@ import { Navigate, createBrowserRouter } from 'react-router-dom';
 import AppLayout from '@/layouts/AppLayout';
 import AuthLayout from '@/layouts/AuthLayout';
 import ChannelPage from '@/pages/admin/ChannelPage';
+import GroupPage from '@/pages/admin/GroupPage';
 import SettingPage from '@/pages/admin/SettingPage';
 import UserPage from '@/pages/admin/UserPage';
 import Login from '@/pages/auth/Login';
@@ -64,6 +65,14 @@ export const router = createBrowserRouter([
         element: (
           <RequireRole minRole={10}>
             <ChannelPage />
+          </RequireRole>
+        ),
+      },
+      {
+        path: 'admin/group',
+        element: (
+          <RequireRole minRole={10}>
+            <GroupPage />
           </RequireRole>
         ),
       },

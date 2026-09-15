@@ -36,6 +36,7 @@ export default function AppLayout() {
     ...(role >= ROLE.ADMIN
       ? [
           { key: '/admin/channel', label: <Link to="/admin/channel">渠道</Link> },
+          { key: '/admin/group', label: <Link to="/admin/group">分组</Link> },
           { key: '/admin/user', label: <Link to="/admin/user">用户</Link> },
         ]
       : []),
