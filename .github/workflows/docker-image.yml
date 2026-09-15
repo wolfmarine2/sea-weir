@@ -4,9 +4,9 @@ on:
   # 支持在 GitHub Actions 页面手动运行
   workflow_dispatch:
   push:
-    # 分支更新时构建（分支名即镜像 tag）
+    # 版本分支更新时构建（分支名即镜像 tag）。用 v* 通配,新增 v0.0.2 等版本分支无需再改本文件。
     branches:
-      - v0.0.1
+      - 'v*'
     # 打 git tag 时也构建（tag 名即镜像 tag）
     tags:
       - 'v*'
