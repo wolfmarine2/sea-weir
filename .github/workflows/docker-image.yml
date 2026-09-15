@@ -6,7 +6,7 @@ on:
   push:
     # 分支更新时构建（分支名即镜像 tag）
     branches:
-      - v0.0.1
+      - 'v*'
     # 打 git tag 时也构建（tag 名即镜像 tag）
     tags:
       - 'v*'
