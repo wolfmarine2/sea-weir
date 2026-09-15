@@ -130,6 +130,8 @@ export interface ChannelPayload {
   param_override?: unknown;
   /** 上游请求头改写;值中 `{api_key}` 替换为渠道密钥。 */
   header_override?: unknown;
+  /** 渠道级设置(如 `{api_protocol: 'anthropic'}`、`{balance: {...}}`)。 */
+  setting?: unknown;
 }
 
 /** 消费日志。与后端 `sea_weir_types::domain::Log` 一致。 */

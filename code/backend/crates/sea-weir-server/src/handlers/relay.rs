@@ -1,11 +1,11 @@
 //! 中继面入口。对应 C4 组件 `relay_entry`。
 //!
 //! 入口:OpenAI `POST /v1/chat/completions`、Claude `POST /v1/messages`。
-//! 两者共用 [`run_relay`]:认证 → 协议转换(入口格式 → OpenAI,上游统一按 OpenAI 兼容转发)
+//! 两者共用 [`run_relay`]:认证 → 协议转换(入口格式 → OpenAI canonical,再按渠道的
+//! 上游协议 `setting.api_protocol` 转成 OpenAI Chat / OpenAI Responses / Anthropic)
 //! → 重试循环选路 → 扣费 + 消费日志 → 响应转回入口格式。
 //!
-//! 待补:Claude/Gemini 流式(SSE 事件改写)、上游 header/参数改写、
-//! core::relay::pipeline 的预扣/结算状态机、MJ/任务类入口。
+//! 待补:core::relay::pipeline 的预扣/结算状态机、MJ/任务类入口。
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -18,6 +18,7 @@ use axum::Json;
 use futures_util::StreamExt;
 
 use sea_weir_core::relay::convert::{convert_request, convert_response, RequestConversionChain};
+use sea_weir_core::relay::protocol::{self, StreamNormalizer, UpstreamProtocol};
 use sea_weir_core::relay::{autoban, billing, select};
 use sea_weir_types::constants::{status as ch_status, LogType};
 use sea_weir_types::domain::{Ability, Channel, Log};
@@ -26,6 +27,10 @@ use sea_weir_types::{AppError, NewApiError, RelayFormat};
 
 use crate::app_state::ServerState;
 use crate::middleware::auth::{AuthToken, TokenAuth};
+
+/// 上游响应体字节流(已统一为 canonical chat SSE,或 OpenAI Chat 的原样透传)。
+type ByteStream =
+    std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Send>>;
 
 fn relay_fail(e: AppError, format: RelayFormat) -> Response {
     crate::response::relay_err(e.into(), format)
@@ -148,6 +153,9 @@ fn apply_header_override(
 }
 
 /// 发起一次上游调用。错误统一归一化为 `NewApiError`(供重试/自动禁用判定)。
+///
+/// 鉴权按上游协议选择:Anthropic 用 `x-api-key` + `anthropic-version`,其余用
+/// `Authorization: Bearer`。
 async fn forward_once(
     http: &reqwest::Client,
     url: &str,
@@ -155,13 +163,19 @@ async fn forward_once(
     body: &serde_json::Value,
     is_stream: bool,
     header_override: Option<&serde_json::Value>,
+    protocol: UpstreamProtocol,
 ) -> Result<UpstreamOutcome, NewApiError> {
-    let request = http
+    let mut request = http
         .post(url)
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::AUTHORIZATION, format!("Bearer {key}"))
-        .json(body);
-    let request = apply_header_override(request, header_override, key);
+        .header(header::CONTENT_TYPE, "application/json");
+    request = if protocol.uses_anthropic_auth() {
+        request
+            .header("x-api-key", key)
+            .header("anthropic-version", "2023-06-01")
+    } else {
+        request.header(header::AUTHORIZATION, format!("Bearer {key}"))
+    };
+    let request = apply_header_override(request, header_override, key).json(body);
 
     let resp = request
         .send()
@@ -206,6 +220,71 @@ fn channel_err(code: &str, message: &str, status_code: u16) -> NewApiError {
         skip_retry: false,
         record_error_log: true,
     }
+}
+
+/// OpenAI Chat 上游:SSE 原样透传。
+fn passthrough_stream(resp: reqwest::Response) -> ByteStream {
+    Box::pin(resp.bytes_stream().map(|r| {
+        r.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+    }))
+}
+
+/// 非 OpenAI Chat 上游:把上游 SSE 归一化成 canonical chat SSE 再下发。
+///
+/// 上游自己的 `[DONE]` 会被丢弃,由 [`StreamNormalizer::finish`] 统一补发,避免重复。
+fn normalize_stream(resp: reqwest::Response, protocol: UpstreamProtocol, model: String) -> ByteStream {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(16);
+    tokio::spawn(async move {
+        let mut norm = StreamNormalizer::new(protocol, &model);
+        let mut buf = String::new();
+        let mut stream = resp.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let Ok(bytes) = chunk else { break };
+            buf.push_str(&String::from_utf8_lossy(&bytes));
+            while let Some(pos) = buf.find('\n') {
+                let line = buf[..pos].to_string();
+                buf.drain(..=pos);
+                let line = line.trim();
+                let Some(payload) = line.strip_prefix("data:") else {
+                    continue; // 忽略 event:/注释行
+                };
+                let payload = payload.trim();
+                if payload.is_empty() || payload == "[DONE]" {
+                    continue;
+                }
+                match norm.push(payload) {
+                    Ok(items) => {
+                        for item in items {
+                            if tx.send(Ok(sse_data(&item))).await.is_err() {
+                                return; // 客户端断开
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx
+                            .send(Err(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                e.to_string(),
+                            )))
+                            .await;
+                        return;
+                    }
+                }
+            }
+        }
+        for item in norm.finish() {
+            if tx.send(Ok(sse_data(&item))).await.is_err() {
+                return;
+            }
+        }
+    });
+    Box::pin(futures_util::stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|item| (item, rx))
+    }))
+}
+
+fn sse_data(payload: &str) -> bytes::Bytes {
+    bytes::Bytes::from(format!("data: {payload}\n\n"))
 }
 
 fn usage_from_body(body: &serde_json::Value) -> Usage {
@@ -388,14 +467,18 @@ async fn run_relay(
             obj.insert("model".into(), serde_json::json!(upstream_model));
         }
 
-        // 渠道级参数改写(在模型映射之后应用,可覆盖 model 等字段);
-        // 每次尝试都从转换后的原始体复制一份,避免重试时重复叠加。
-        let mut attempt_body = upstream_body.clone();
+        // 渠道的上游协议(可逐渠道不同):canonical chat → 上游协议;
+        // param_override 作用在**上游**请求体上,便于覆盖各协议的原生参数。
+        let protocol = UpstreamProtocol::resolve(channel);
+        let mut attempt_body = match protocol::chat_to_upstream(&upstream_body, protocol) {
+            Ok(v) => v,
+            Err(e) => return relay_fail(e, entry),
+        };
         if let Some(over) = channel.param_override.as_ref() {
             apply_param_override(&mut attempt_body, over);
         }
 
-        let url = upstream_url(base_url, "/v1/chat/completions");
+        let url = upstream_url(base_url, protocol.path());
         match forward_once(
             &state.http,
             &url,
@@ -403,10 +486,16 @@ async fn run_relay(
             &attempt_body,
             is_stream,
             channel.header_override.as_ref(),
+            protocol,
         )
         .await
         {
             Ok(UpstreamOutcome::Stream(resp)) => {
+                let stream = if protocol == UpstreamProtocol::OpenAiChat {
+                    passthrough_stream(resp)
+                } else {
+                    normalize_stream(resp, protocol, origin_model.clone())
+                };
                 if entry == RelayFormat::Claude {
                     return claude_stream_response(
                         state.clone(),
@@ -414,7 +503,7 @@ async fn run_relay(
                         channel.id,
                         origin_model.clone(),
                         request_id.clone(),
-                        resp,
+                        stream,
                         price.clone(),
                     );
                 }
@@ -424,12 +513,17 @@ async fn run_relay(
                     channel.id,
                     origin_model.clone(),
                     request_id.clone(),
-                    resp,
+                    stream,
                     price.clone(),
                 );
             }
             Ok(UpstreamOutcome::Json(upstream_resp)) => {
-                let usage = usage_from_body(&upstream_resp);
+                // 上游响应 → canonical chat,再做计费与入口格式转换。
+                let canonical = match protocol::upstream_to_chat(&upstream_resp, protocol) {
+                    Ok(v) => v,
+                    Err(e) => return relay_fail(e, entry),
+                };
+                let usage = usage_from_body(&canonical);
                 let quota = billing::calculate_quota(&usage, &price);
                 let use_time = started.elapsed().as_secs() as i32;
                 if let Err(e) = charge(&state, &auth, quota).await {
@@ -448,7 +542,7 @@ async fn run_relay(
                 )
                 .await;
 
-                let out = match convert_response(&upstream_resp, RelayFormat::OpenAi, entry) {
+                let out = match convert_response(&canonical, RelayFormat::OpenAi, entry) {
                     Ok(v) => v,
                     Err(e) => return relay_fail(e, entry),
                 };
@@ -489,7 +583,7 @@ fn stream_response(
     channel_id: i64,
     model: String,
     request_id: String,
-    resp: reqwest::Response,
+    stream: ByteStream,
     price: billing::PriceData,
 ) -> Response {
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(16);
@@ -498,7 +592,7 @@ fn stream_response(
     tokio::spawn(async move {
         let mut usage = Usage::default();
         let mut line_buf = String::new();
-        let mut stream = resp.bytes_stream();
+        let mut stream = stream;
         while let Some(chunk) = stream.next().await {
             match chunk {
                 Ok(bytes) => {
@@ -565,7 +659,7 @@ fn claude_stream_response(
     channel_id: i64,
     model: String,
     request_id: String,
-    resp: reqwest::Response,
+    stream: ByteStream,
     price: billing::PriceData,
 ) -> Response {
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(16);
@@ -576,7 +670,7 @@ fn claude_stream_response(
         let mut buf = String::new();
         let mut block_started = false;
         let mut closed = false;
-        let mut stream = resp.bytes_stream();
+        let mut stream = stream;
 
         while let Some(chunk) = stream.next().await {
             let Ok(bytes) = chunk else { break };
@@ -899,5 +993,129 @@ mod tests {
         let mut body = json!({"model": "gpt-4o"});
         apply_param_override(&mut body, &json!("not-an-object"));
         assert_eq!(body, json!({"model": "gpt-4o"}));
+    }
+
+    #[test]
+    fn upstream_url_joins_each_protocol_path() {
+        assert_eq!(
+            upstream_url("https://api.deepseek.com", UpstreamProtocol::OpenAiChat.path()),
+            "https://api.deepseek.com/v1/chat/completions"
+        );
+        assert_eq!(
+            upstream_url("https://api.openai.com/v1", UpstreamProtocol::OpenAiResponses.path()),
+            "https://api.openai.com/v1/responses",
+            "base_url 已含 /v1 时不应重复"
+        );
+        assert_eq!(
+            upstream_url("https://api.anthropic.com", UpstreamProtocol::Anthropic.path()),
+            "https://api.anthropic.com/v1/messages"
+        );
+    }
+
+    /// Anthropic 上游:必须用 `x-api-key` + `anthropic-version`,而不是 Bearer。
+    #[tokio::test]
+    async fn forward_once_uses_protocol_specific_auth() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(header("x-api-key", "sk-a"))
+            .and(header("anthropic-version", "2023-06-01"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(header("authorization", "Bearer sk-o"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let http = reqwest::Client::new();
+        let body = json!({"model": "m"});
+        let url = upstream_url(&server.uri(), UpstreamProtocol::Anthropic.path());
+        let out = forward_once(&http, &url, "sk-a", &body, false, None, UpstreamProtocol::Anthropic).await;
+        assert!(matches!(out, Ok(UpstreamOutcome::Json(_))), "Anthropic 调用应成功");
+
+        let url = upstream_url(&server.uri(), UpstreamProtocol::OpenAiChat.path());
+        let out = forward_once(&http, &url, "sk-o", &body, false, None, UpstreamProtocol::OpenAiChat).await;
+        assert!(matches!(out, Ok(UpstreamOutcome::Json(_))), "OpenAI 调用应成功");
+        // wiremock 的 expect(1) 在 drop 时校验,未命中会 panic。
+    }
+
+    /// Responses 上游流 → canonical chat SSE(含 usage 与 [DONE])。
+    #[tokio::test]
+    async fn normalize_responses_stream_to_chat_sse() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let sse = concat!(
+            "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-4o\"}}\n\n",
+            "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"你\"}\n\n",
+            "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}}\n\n"
+        );
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"))
+            .mount(&server)
+            .await;
+
+        let resp = reqwest::Client::new()
+            .post(upstream_url(&server.uri(), "/v1/responses"))
+            .send()
+            .await
+            .unwrap();
+        let out = collect_stream(normalize_stream(resp, UpstreamProtocol::OpenAiResponses, "gpt-4o".into())).await;
+        assert!(out.contains("\"content\":\"你\""), "文本增量应转成 chat delta: {out}");
+        assert!(out.contains("\"completion_tokens\":2"), "应带 usage: {out}");
+        assert!(out.contains("data: [DONE]"), "应补发 [DONE]: {out}");
+    }
+
+    /// Anthropic 上游流 → canonical chat SSE(文本 + tool_use + usage)。
+    #[tokio::test]
+    async fn normalize_anthropic_stream_to_chat_sse() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let sse = concat!(
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude-x\",\"usage\":{\"input_tokens\":5,\"output_tokens\":0}}}\n\n",
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"嗨\"}}\n\n",
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":7}}\n\n",
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+        );
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"))
+            .mount(&server)
+            .await;
+
+        let resp = reqwest::Client::new()
+            .post(upstream_url(&server.uri(), "/v1/messages"))
+            .send()
+            .await
+            .unwrap();
+        let out = collect_stream(normalize_stream(resp, UpstreamProtocol::Anthropic, "claude-x".into())).await;
+        assert!(out.contains("\"content\":\"嗨\""), "text_delta 应转成 chat delta: {out}");
+        assert!(out.contains("\"finish_reason\":\"stop\""), "end_turn → stop: {out}");
+        assert!(out.contains("\"prompt_tokens\":5"), "usage 应归一: {out}");
+        assert!(out.contains("data: [DONE]"), "应补发 [DONE]: {out}");
+    }
+
+    async fn collect_stream(mut stream: ByteStream) -> String {
+        let mut out = String::new();
+        while let Some(item) = stream.next().await {
+            if let Ok(bytes) = item {
+                out.push_str(&String::from_utf8_lossy(&bytes));
+            }
+        }
+        out
     }
 }

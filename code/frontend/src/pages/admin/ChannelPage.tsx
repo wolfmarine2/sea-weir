@@ -14,6 +14,7 @@ import {
   InputNumber,
   Modal,
   Popconfirm,
+  Select,
   Space,
   Switch,
   Tag,
@@ -39,9 +40,19 @@ interface ChannelForm {
   priority?: number | undefined;
   weight?: number | undefined;
   enabled: boolean;
+  /** 上游协议:'' 自动(按渠道类型推断)/ openai_chat / openai_responses / anthropic。 */
+  api_protocol?: string | undefined;
   param_override?: string | undefined;
   header_override?: string | undefined;
 }
+
+/** 上游协议选项(存入渠道 setting.api_protocol)。 */
+const PROTOCOLS = [
+  { value: '', label: '自动(按渠道类型:Anthropic 类型→Anthropic,其余→OpenAI Chat)' },
+  { value: 'openai_chat', label: 'OpenAI Chat —— /v1/chat/completions' },
+  { value: 'openai_responses', label: 'OpenAI Responses —— /v1/responses' },
+  { value: 'anthropic', label: 'Anthropic Messages —— /v1/messages(x-api-key)' },
+];
 
 const STATUS: Record<number, { color: string; text: string }> = {
   1: { color: 'green', text: '启用' },
@@ -66,6 +77,32 @@ function isJson(text: string | undefined): boolean {
 function parseJson(text: string | undefined): unknown {
   const t = (text ?? '').trim();
   return t === '' ? undefined : JSON.parse(t);
+}
+
+/** 读取渠道 setting.api_protocol('' 表示自动)。 */
+function protocolOf(setting: unknown): string {
+  if (setting && typeof setting === 'object' && !Array.isArray(setting)) {
+    const v = (setting as Record<string, unknown>).api_protocol;
+    if (typeof v === 'string') return v;
+  }
+  return '';
+}
+
+/**
+ * 把上游协议并入渠道 setting,保留 setting 里的其它配置(如 balance)。
+ * 显式置空时返回 `{}` 以清掉旧值(后端 update 用 setting 整体覆盖)。
+ */
+function withProtocol(existing: unknown, protocol: string | undefined): Record<string, unknown> {
+  const base =
+    existing && typeof existing === 'object' && !Array.isArray(existing)
+      ? { ...(existing as Record<string, unknown>) }
+      : {};
+  if (protocol) {
+    base.api_protocol = protocol;
+  } else {
+    delete base.api_protocol;
+  }
+  return base;
 }
 
 export default function ChannelPage() {
@@ -99,6 +136,7 @@ export default function ChannelPage() {
       priority: record.priority,
       weight: record.weight,
       enabled: record.status === 1,
+      api_protocol: protocolOf(record.setting),
       param_override: record.param_override
         ? JSON.stringify(record.param_override, null, 2)
         : undefined,
@@ -121,6 +159,7 @@ export default function ChannelPage() {
         base_url: values.base_url,
         priority: values.priority,
         weight: values.weight,
+        setting: withProtocol(editing?.setting, values.api_protocol),
         param_override: parseJson(values.param_override),
         header_override: parseJson(values.header_override),
       };
@@ -370,6 +409,13 @@ export default function ChannelPage() {
           </Form.Item>
           <Form.Item name="base_url" label="Base URL">
             <Input placeholder="https://api.deepseek.com" />
+          </Form.Item>
+          <Form.Item
+            name="api_protocol"
+            label="上游协议(对外部平台使用的 API 协议)"
+            tooltip="决定 sea-weir 用哪种协议调用该渠道:OpenAI Chat、OpenAI Responses 或 Anthropic Messages。留空则按渠道类型推断。"
+          >
+            <Select options={PROTOCOLS} />
           </Form.Item>
           <Space size="large">
             <Form.Item name="priority" label="优先级">

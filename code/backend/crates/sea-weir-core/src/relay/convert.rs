@@ -56,7 +56,7 @@ pub fn convert_response(
 // ───────────────────────── 请求转换 ─────────────────────────
 
 /// OpenAI → Claude:system 提取到顶层、补 max_tokens、多模态块转换。
-fn openai_to_claude(raw: &Value) -> Value {
+pub(crate) fn openai_to_claude(raw: &Value) -> Value {
     let mut out = raw.clone();
     let obj = match out.as_object_mut() {
         Some(o) => o,
