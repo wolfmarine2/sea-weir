@@ -26,11 +26,12 @@ use axum::{Json, Router};
 use clap::Parser;
 
 use sea_weir_repository::pg::{
-    PgChannelRepository, PgLogRepository, PgOptionRepository, PgTokenRepository, PgUserRepository,
+    PgChannelRepository, PgLogRepository, PgOptionRepository, PgPrefillGroupRepository,
+    PgTokenRepository, PgUserRepository,
 };
 use sea_weir_repository::{
-    ChannelRepository, DbPools, LogRepository, OptionRepository, RepositoryContext, TokenRepository,
-    UserRepository,
+    ChannelRepository, DbPools, LogRepository, OptionRepository, PrefillGroupRepository,
+    RepositoryContext, TokenRepository, UserRepository,
 };
 use sea_weir_server::app_state::ServerState;
 use sea_weir_server::handlers;
@@ -71,7 +72,8 @@ async fn main() -> anyhow::Result<()> {
 
     // 4. 主库/日志库连接池 + 已实现的 Repository(数据库不可用时降级启动)
     let cache = connect_cache(&config).await;
-    let (users, options, tokens, channels, logs) = connect_repositories(&config, cache.clone()).await;
+    let (users, options, tokens, channels, logs, prefill_groups) =
+        connect_repositories(&config, cache.clone()).await;
 
     // 5. Valkey 客户端(不可用时降级:限流走内存窗口、会话吊销不可用)
     // (连接已在第 4 步前完成,见 connect_cache)
@@ -85,6 +87,7 @@ async fn main() -> anyhow::Result<()> {
         tokens,
         channels,
         logs,
+        prefill_groups,
         pricing: sea_weir_server::pricing::PricingCache::new(),
         relay_limiter: sea_weir_server::middleware::rate_limit::SlidingWindowLimiter::new(
             relay_rpm(),
@@ -143,18 +146,19 @@ async fn connect_repositories(
     Option<Arc<dyn TokenRepository>>,
     Option<Arc<dyn ChannelRepository>>,
     Option<Arc<dyn LogRepository>>,
+    Option<Arc<dyn PrefillGroupRepository>>,
 ) {
     let dsn = config.database.dsn.trim();
     if dsn.is_empty() || dsn.contains("CHANGE_ME") {
         tracing::warn!("database.dsn 未配置(仍为占位值),跳过数据库连接");
-        return (None, None, None, None, None);
+        return (None, None, None, None, None, None);
     }
 
     let pools = match DbPools::connect(&config.database).await {
         Ok(pools) => pools,
         Err(e) => {
             tracing::warn!(error = %e, "数据库不可用,以降级模式启动");
-            return (None, None, None, None, None);
+            return (None, None, None, None, None, None);
         }
     };
 
@@ -178,7 +182,8 @@ async fn connect_repositories(
         Some(Arc::new(PgOptionRepository::new(ctx.clone()))),
         Some(Arc::new(PgTokenRepository::new(ctx.clone()))),
         Some(Arc::new(PgChannelRepository::new(ctx.clone()))),
-        Some(Arc::new(PgLogRepository::new(ctx))),
+        Some(Arc::new(PgLogRepository::new(ctx.clone()))),
+        Some(Arc::new(PgPrefillGroupRepository::new(ctx))),
     )
 }
 
@@ -319,6 +324,23 @@ fn build_router(state: Arc<ServerState>) -> Router {
                 .put(handlers::group::update),
         )
         .route("/api/group/{name}", delete(handlers::group::delete))
+        // 预填分组(model / tag / endpoint)(AdminAuth)
+        .route(
+            "/api/prefill_group",
+            get(handlers::prefill_group::list)
+                .post(handlers::prefill_group::create)
+                .put(handlers::prefill_group::update),
+        )
+        .route(
+            "/api/prefill_group/",
+            get(handlers::prefill_group::list)
+                .post(handlers::prefill_group::create)
+                .put(handlers::prefill_group::update),
+        )
+        .route(
+            "/api/prefill_group/{id}",
+            delete(handlers::prefill_group::delete),
+        )
         // 中继面(TokenAuth / sk-token;已挂 IP 限流)
         .merge(relay)
         // K8s 探针

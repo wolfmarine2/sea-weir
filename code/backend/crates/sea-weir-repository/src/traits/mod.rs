@@ -7,6 +7,7 @@ pub mod ability;
 pub mod channel;
 pub mod log;
 pub mod option;
+pub mod prefill_group;
 pub mod redemption;
 pub mod subscription;
 pub mod task;
@@ -18,6 +19,7 @@ pub use ability::AbilityRepository;
 pub use channel::ChannelRepository;
 pub use log::LogRepository;
 pub use option::OptionRepository;
+pub use prefill_group::PrefillGroupRepository;
 pub use redemption::RedemptionRepository;
 pub use subscription::SubscriptionRepository;
 pub use task::TaskRepository;
@@ -30,7 +32,8 @@ pub use user::UserRepository;
 #[cfg(feature = "mock")]
 pub use {
     ability::MockAbilityRepository, channel::MockChannelRepository, log::MockLogRepository,
-    option::MockOptionRepository, redemption::MockRedemptionRepository,
+    option::MockOptionRepository, prefill_group::MockPrefillGroupRepository,
+    redemption::MockRedemptionRepository,
     subscription::MockSubscriptionRepository, task::MockTaskRepository, token::MockTokenRepository,
     topup::MockTopUpRepository, user::MockUserRepository,
 };

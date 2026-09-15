@@ -182,3 +182,24 @@ export interface GroupPayload {
   description?: string | undefined;
   usable?: boolean | undefined;
 }
+
+/** 预填分组:模型广场按 model / tag / endpoint 预置条目。 */
+export interface PrefillGroupItem {
+  id: number;
+  name: string;
+  /** model / tag / endpoint */
+  type: string;
+  /** 条目数组(JSONB);后端归一为数组。 */
+  items: string[] | null;
+  description: string;
+  created_time: number;
+  updated_time: number;
+}
+
+export interface PrefillGroupPayload {
+  id?: number | undefined;
+  name: string;
+  type: string;
+  items: string[];
+  description?: string | undefined;
+}

@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use sea_weir_repository::{
-    ChannelRepository, LogRepository, OptionRepository, TokenRepository, UserRepository,
+    ChannelRepository, LogRepository, OptionRepository, PrefillGroupRepository, TokenRepository,
+    UserRepository,
 };
 use sea_weir_types::config::AppConfig;
 
@@ -43,6 +44,8 @@ pub struct ServerState {
     pub options: Option<Arc<dyn OptionRepository>>,
     pub tokens: Option<Arc<dyn TokenRepository>>,
     pub channels: Option<Arc<dyn ChannelRepository>>,
+    /// 预填分组(model/tag/endpoint);分组管理页用。
+    pub prefill_groups: Option<Arc<dyn PrefillGroupRepository>>,
     /// 消费日志(独立日志库 pool;未配置时复用主库)。
     pub logs: Option<Arc<dyn LogRepository>>,
     /// 定价视图缓存(进程内,60s TTL)。

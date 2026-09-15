@@ -15,6 +15,7 @@ export * as security from './security';
 export * as task from './task';
 export * as dashboard from './dashboard';
 export * as group from './group';
+export * as prefillGroup from './prefillGroup';
 export * as system from './system';
 export * as performance from './performance';
 export * as oauthProvider from './oauthProvider';

@@ -7,6 +7,7 @@
 pub mod channel;
 pub mod dashboard;
 pub mod group;
+pub mod prefill_group;
 pub mod log;
 pub mod model;
 pub mod oauth_provider;
