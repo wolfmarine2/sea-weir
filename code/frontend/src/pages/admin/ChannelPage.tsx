@@ -35,7 +35,8 @@ interface ChannelForm {
   type: number;
   key?: string | undefined;
   models: string;
-  group: string;
+  /** 多选;提交时以逗号连接(后端 channels.group 为逗号分隔多值)。 */
+  group: string[];
   base_url?: string | undefined;
   priority?: number | undefined;
   weight?: number | undefined;
@@ -113,12 +114,18 @@ export default function ChannelPage() {
   const [saving, setSaving] = useState(false);
   /** 渠道类型目录(后端下发);加载失败时退回数字输入,表单仍可用。 */
   const [typeOptions, setTypeOptions] = useState<ChannelTypeOption[]>([]);
+  /** 已配置的分组名(分组管理页维护),供分组多选下拉。 */
+  const [groupOptions, setGroupOptions] = useState<string[]>([]);
 
   useEffect(() => {
     api.channel
       .types()
       .then(({ items }) => setTypeOptions(items))
       .catch(() => setTypeOptions([]));
+    api.group
+      .list()
+      .then(({ items }) => setGroupOptions(items.map((g) => g.name)))
+      .catch(() => setGroupOptions([]));
   }, []);
 
   const fetcher = useCallback(
@@ -140,7 +147,7 @@ export default function ChannelPage() {
       type: record.type,
       key: undefined,
       models: record.models,
-      group: record.group,
+      group: record.group ? record.group.split(',').map((g) => g.trim()).filter(Boolean) : [],
       base_url: record.base_url ?? undefined,
       priority: record.priority,
       weight: record.weight,
@@ -163,7 +170,7 @@ export default function ChannelPage() {
         type: values.type,
         name: values.name,
         models: values.models,
-        group: values.group,
+        group: values.group.join(','),
         status: values.enabled ? 1 : 2,
         base_url: values.base_url,
         priority: values.priority,
@@ -391,7 +398,7 @@ export default function ChannelPage() {
           form={form}
           layout="vertical"
           onFinish={onSubmit}
-          initialValues={{ type: 1, enabled: true, group: 'default', priority: 0, weight: 0 }}
+          initialValues={{ type: 1, enabled: true, group: ['default'], priority: 0, weight: 0 }}
         >
           <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入名称' }]}>
             <Input />
@@ -437,8 +444,17 @@ export default function ChannelPage() {
           >
             <Input placeholder="gpt-4o,deepseek-chat" />
           </Form.Item>
-          <Form.Item name="group" label="分组(逗号分隔)" rules={[{ required: true }]}>
-            <Input placeholder="default,vip" />
+          <Form.Item
+            name="group"
+            label="分组"
+            tooltip="可多选;选项来自「分组」页维护的分组。也可直接输入尚未在分组页登记的名称。"
+            rules={[{ required: true, message: '请至少选择一个分组' }]}
+          >
+            <Select
+              mode="tags"
+              placeholder="选择或输入分组名,如 default"
+              options={groupOptions.map((g) => ({ value: g, label: g }))}
+            />
           </Form.Item>
           <Form.Item name="base_url" label="Base URL">
             <Input placeholder="https://api.deepseek.com" />

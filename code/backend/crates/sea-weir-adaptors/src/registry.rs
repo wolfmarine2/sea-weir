@@ -98,8 +98,8 @@ fn sync_spec(api_type: ApiType) -> (&'static str, &'static str, Protocol) {
             Protocol::Gemini,
         ),
         Baidu => ("Baidu", "https://aip.baidubce.com", Protocol::Custom),
-        Zhipu => ("Zhipu", "https://open.bigmodel.cn", Protocol::OpenAi),
-        Ali => ("Ali", "https://dashscope.aliyuncs.com", Protocol::OpenAi),
+        Zhipu => ("Zhipu / 智谱 GLM", "https://open.bigmodel.cn", Protocol::OpenAi),
+        Ali => ("Ali / 阿里百炼", "https://dashscope.aliyuncs.com", Protocol::OpenAi),
         Xunfei => (
             "Xunfei",
             "https://spark-api-open.xf-yun.com",
@@ -107,16 +107,16 @@ fn sync_spec(api_type: ApiType) -> (&'static str, &'static str, Protocol) {
         ),
         AiProxyLibrary => ("AiProxyLibrary", "https://api.aiproxy.io", Protocol::OpenAi),
         Tencent => (
-            "Tencent",
-            "https://hunyuan.tencentcloudapi.com",
-            Protocol::Custom,
+            "Tencent / 腾讯混元 TokenHub",
+            "https://api.hunyuan.cloud.tencent.com",
+            Protocol::OpenAi,
         ),
         Gemini => (
             "Gemini",
             "https://generativelanguage.googleapis.com",
             Protocol::Gemini,
         ),
-        ZhipuV4 => ("ZhipuV4", "https://open.bigmodel.cn", Protocol::OpenAi),
+        ZhipuV4 => ("ZhipuV4 / 智谱 GLM", "https://open.bigmodel.cn", Protocol::OpenAi),
         Ollama => ("Ollama", "http://localhost:11434", Protocol::Custom),
         Perplexity => ("Perplexity", "https://api.perplexity.ai", Protocol::OpenAi),
         Aws => ("Aws", "", Protocol::Custom),
@@ -144,11 +144,14 @@ fn sync_spec(api_type: ApiType) -> (&'static str, &'static str, Protocol) {
         Xai => ("Xai", "https://api.x.ai", Protocol::OpenAi),
         Coze => ("Coze", "https://api.coze.cn", Protocol::Custom),
         Jimeng => ("Jimeng", "", Protocol::Custom),
-        Moonshot => ("Moonshot", "https://api.moonshot.cn", Protocol::Claude),
+        Moonshot => ("Moonshot / Kimi", "https://api.moonshot.cn", Protocol::OpenAi),
         Submodel => ("Submodel", "", Protocol::OpenAi),
         MiniMax => ("MiniMax", "https://api.minimax.chat", Protocol::OpenAi),
         Replicate => ("Replicate", "https://api.replicate.com", Protocol::Custom),
         Codex => ("Codex", "", Protocol::OpenAi),
+        // sea-weir 扩展:默认 base_url 留空,由渠道按各自网关地址填写。
+        OpenCode => ("OpenCode", "", Protocol::OpenAi),
+        CommandCode => ("CommandCode", "", Protocol::OpenAi),
     }
 }
 

@@ -1,6 +1,7 @@
 //! 渠道类型枚举。
 //!
-//! 与 new-api `constant/api_type.go` 的 35 个常量一一对应(不含仅作计数位的 `APITypeDummy`)。
+//! 与 new-api `constant/api_type.go` 的 35 个常量一一对应(不含仅作计数位的 `APITypeDummy`),
+//! 另含 2 个 sea-weir 扩展类型(`OpenCode` / `CommandCode`,编号 100/101 避开 new-api 空间)。
 //! 注意:`relay/channel/` 下有 36 个目录,部分目录共用 OpenAI 兼容 ApiType。
 
 use serde::{Deserialize, Serialize};
@@ -43,6 +44,10 @@ pub enum ApiType {
     MiniMax,
     Replicate,
     Codex,
+    /// sea-weir 扩展:OpenCode(OpenAI 兼容)。
+    OpenCode,
+    /// sea-weir 扩展:CommandCode(OpenAI 兼容)。
+    CommandCode,
 }
 
 impl ApiType {
@@ -83,6 +88,8 @@ impl ApiType {
         Self::MiniMax,
         Self::Replicate,
         Self::Codex,
+        Self::OpenCode,
+        Self::CommandCode,
     ];
 
     /// ChannelType ↔ ApiType 登记表(new-api `common/api_type.go` `ChannelType2APIType` 的镜像)。
@@ -123,6 +130,9 @@ impl ApiType {
         (53, ApiType::Submodel),
         (56, ApiType::Replicate),
         (57, ApiType::Codex),
+        // sea-weir 扩展:编号避开 new-api 已用空间(其常量最大 57)。
+        (100, ApiType::OpenCode),
+        (101, ApiType::CommandCode),
     ];
 
     /// 渠道表 `type` 列(ChannelType)→ ApiType。
@@ -181,7 +191,7 @@ mod tests {
 
     #[test]
     fn all_types_are_registered_and_round_trip() {
-        assert_eq!(ApiType::ALL.len(), 35, "数量锁死,防止漏实现");
+        assert_eq!(ApiType::ALL.len(), 37, "35 个 new-api 类型 + 2 个扩展;数量锁死防止漏实现");
         assert_eq!(TaskPlatform::ALL.len(), 10);
         for api_type in ApiType::ALL {
             let ct = api_type
