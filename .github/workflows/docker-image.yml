@@ -4,7 +4,7 @@ on:
   # 支持在 GitHub Actions 页面手动运行
   workflow_dispatch:
   push:
-    # 分支更新时构建（分支名即镜像 tag）
+    # 版本分支更新时构建（分支名即镜像 tag）。用 v* 通配,新增 v0.0.2 等版本分支无需再改本文件。
     branches:
       - 'v*'
     # 打 git tag 时也构建（tag 名即镜像 tag）
@@ -15,6 +15,14 @@ on:
 permissions:
   contents: read
   packages: write
+
+# 同一 ref 的构建串行化:新推送自动取消尚未完成的旧构建。
+# 否则同一分支上多个提交会并行构建并推送同一个 tag(ref_name),后完成者覆盖先完成者,
+# 而"谁后完成"并不确定 —— 实测出现过 v0.0.4 一度指向旧提交(靠逐个核对 digest 才发现),
+# 同时两个构建争用同一份 GHA 缓存,单步耗时从 ~20min 涨到 60min+。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -42,31 +50,62 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # ─────────────────────────── 后端镜像 ───────────────────────────
+      # 镜像名:ghcr.io/<owner>/sea-weir/backend(GHCR 要求仓库名全小写)
       # 生成镜像标签：
       #   - ref_name：分支推送时为 v0.0.1，tag 推送时为 tag 名
       #   - latest：仅在默认分支推送时更新，避免发版分支抢占
       #   - sha-xxxxxxx：便于精确回滚
-      - name: Generate Docker metadata
-        id: meta
+      - name: Generate backend metadata
+        id: meta_backend
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ghcr.io/${{ github.repository }}/backend
           tags: |
             type=raw,value=${{ github.ref_name }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,prefix=sha-
 
       # 构建 amd64 和 arm64 并推送到 GHCR
-      - name: Build and push multi-platform image
+      # 注意:后端是 Rust + LTO,arm64 经 QEMU 模拟编译整棵依赖树会非常慢
+      #       (可能数小时)。如需稳定出 arm64,建议改用原生 arm64 runner
+      #       (ubuntu-24.04-arm)分架构构建后用 imagetools 合并 manifest。
+      - name: Build and push backend (multi-platform)
         uses: docker/build-push-action@v5
         with:
-          context: .
-          file: ./Dockerfile
+          context: code/backend
+          file: code/backend/Dockerfile
           platforms: |
             linux/amd64
             linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: ${{ steps.meta_backend.outputs.tags }}
+          labels: ${{ steps.meta_backend.outputs.labels }}
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      # ─────────────────────────── 前端镜像 ───────────────────────────
+      # 镜像名:ghcr.io/<owner>/sea-weir/frontend,标签策略与后端一致
+      - name: Generate frontend metadata
+        id: meta_frontend
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}/frontend
+          tags: |
+            type=raw,value=${{ github.ref_name }}
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-
+
+      - name: Build and push frontend (multi-platform)
+        uses: docker/build-push-action@v5
+        with:
+          context: code/frontend
+          file: code/frontend/Dockerfile
+          platforms: |
+            linux/amd64
+            linux/arm64
+          push: true
+          tags: ${{ steps.meta_frontend.outputs.tags }}
+          labels: ${{ steps.meta_frontend.outputs.labels }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
