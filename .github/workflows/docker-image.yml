@@ -16,6 +16,14 @@ permissions:
   contents: read
   packages: write
 
+# 同一 ref 的构建串行化:新推送自动取消尚未完成的旧构建。
+# 否则同一分支上多个提交会并行构建并推送同一个 tag(ref_name),后完成者覆盖先完成者,
+# 而"谁后完成"并不确定 —— 实测出现过 v0.0.4 一度指向旧提交(靠逐个核对 digest 才发现),
+# 同时两个构建争用同一份 GHA 缓存,单步耗时从 ~20min 涨到 60min+。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: Build amd64 and arm64
