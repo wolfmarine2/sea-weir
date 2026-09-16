@@ -14,6 +14,8 @@ export interface StatusState {
   logo: string;
   /** OAuth / 支付 / 各功能模块的开关集合 */
   features: Record<string, boolean>;
+  /** 数据库不可用原因(可用时为空串);用于首页直接展示,免去翻日志 */
+  dbError: string;
 
   fetch: () => Promise<void>;
 }
@@ -22,6 +24,7 @@ export interface StatusState {
 interface StatusPayload {
   system_name?: string;
   logo?: string;
+  db_error?: string | null;
   [key: string]: unknown;
 }
 
@@ -41,6 +44,7 @@ export const useStatusStore = create<StatusState>()((set) => ({
   systemName: '',
   logo: '',
   features: {},
+  dbError: '',
   fetch: async () => {
     try {
       const payload = await request<StatusPayload>({ url: '/api/status', method: 'get' });
@@ -49,6 +53,7 @@ export const useStatusStore = create<StatusState>()((set) => ({
         systemName: payload.system_name ?? '',
         logo: payload.logo ?? '',
         features: extractFeatures(payload),
+        dbError: payload.db_error ?? '',
       });
     } catch {
       // 失败不阻塞首屏:以默认值降级,标记已加载。

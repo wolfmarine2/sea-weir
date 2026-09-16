@@ -48,6 +48,9 @@ pub struct ServerState {
     pub prefill_groups: Option<Arc<dyn PrefillGroupRepository>>,
     /// 消费日志(独立日志库 pool;未配置时复用主库)。
     pub logs: Option<Arc<dyn LogRepository>>,
+    /// 数据库装配失败原因(成功为 None)。经 `/api/status` 下发,便于运维直接看到原因
+    /// 而不必翻日志(如「Oracle 兼容模式需重建」/「连接被拒」)。
+    pub db_error: Option<String>,
     /// 定价视图缓存(进程内,60s TTL)。
     pub pricing: crate::pricing::PricingCache,
     /// 中继面限流(进程内滑动窗口;Valkey 多副本一致待接入)。

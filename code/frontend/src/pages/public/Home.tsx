@@ -18,6 +18,7 @@ export default function Home() {
   const systemName = useStatusStore((s) => s.systemName);
   const setup = useStatusStore((s) => s.features.setup ?? false);
   const dbReady = useStatusStore((s) => s.features.db_ready ?? false);
+  const dbError = useStatusStore((s) => s.dbError);
   const isLoggedIn = useUserStore((s) => s.isLoggedIn);
   const username = useUserStore((s) => s.username);
   const role = useUserStore((s) => s.role);
@@ -61,6 +62,11 @@ export default function Home() {
             <Descriptions.Item label="系统名称">{systemName || 'sea-weir'}</Descriptions.Item>
             <Descriptions.Item label="数据库">
               <Tag color={dbReady ? 'green' : 'orange'}>{dbReady ? '已连接' : '未连接'}</Tag>
+              {!dbReady && dbError && (
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {dbError}
+                </Typography.Text>
+              )}
             </Descriptions.Item>
             <Descriptions.Item label="首装">
               <Tag color={setup ? 'green' : 'orange'}>{setup ? '已完成' : '待初始化'}</Tag>

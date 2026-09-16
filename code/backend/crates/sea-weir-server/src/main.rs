@@ -72,8 +72,10 @@ async fn main() -> anyhow::Result<()> {
 
     // 4. 主库/日志库连接池 + 已实现的 Repository(数据库不可用时降级启动)
     let cache = connect_cache(&config).await;
-    let (users, options, tokens, channels, logs, prefill_groups) =
-        connect_repositories(&config, cache.clone()).await;
+    let repos = connect_repositories(&config, cache.clone()).await;
+    if let Some(err) = repos.error.as_ref() {
+        tracing::warn!(error = %err, "数据库不可用,以降级模式启动");
+    }
 
     // 5. Valkey 客户端(不可用时降级:限流走内存窗口、会话吊销不可用)
     // (连接已在第 4 步前完成,见 connect_cache)
@@ -82,12 +84,13 @@ async fn main() -> anyhow::Result<()> {
     let state = Arc::new(ServerState {
         sessions: SessionSigner::new(&config.session),
         config,
-        users,
-        options,
-        tokens,
-        channels,
-        logs,
-        prefill_groups,
+        users: repos.users,
+        options: repos.options,
+        tokens: repos.tokens,
+        channels: repos.channels,
+        logs: repos.logs,
+        prefill_groups: repos.prefill_groups,
+        db_error: repos.error,
         pricing: sea_weir_server::pricing::PricingCache::new(),
         relay_limiter: sea_weir_server::middleware::rate_limit::SlidingWindowLimiter::new(
             relay_rpm(),
@@ -136,30 +139,46 @@ async fn connect_cache(
     }
 }
 
-/// 建立连接池并装配已实现的 Repository;不可用或未配置时返回 `(None, ...)`。
+/// 数据层装配结果。任一 Repository 为 `None` 表示数据库不可用;
+/// `error` 保留失败原因,经 `/api/status` 下发,便于直接看到"为什么连不上"。
+struct RepoBundle {
+    users: Option<Arc<dyn UserRepository>>,
+    options: Option<Arc<dyn OptionRepository>>,
+    tokens: Option<Arc<dyn TokenRepository>>,
+    channels: Option<Arc<dyn ChannelRepository>>,
+    logs: Option<Arc<dyn LogRepository>>,
+    prefill_groups: Option<Arc<dyn PrefillGroupRepository>>,
+    error: Option<String>,
+}
+
+impl RepoBundle {
+    /// 全部为 `None` 并带上失败原因。
+    fn unavailable(error: impl Into<String>) -> Self {
+        Self {
+            users: None,
+            options: None,
+            tokens: None,
+            channels: None,
+            logs: None,
+            prefill_groups: None,
+            error: Some(error.into()),
+        }
+    }
+}
+
+/// 建立连接池并装配已实现的 Repository;不可用或未配置时返回全 `None` + 原因。
 async fn connect_repositories(
     config: &AppConfig,
     cache: Option<sea_weir_repository::pool::cache_client::CacheClient>,
-) -> (
-    Option<Arc<dyn UserRepository>>,
-    Option<Arc<dyn OptionRepository>>,
-    Option<Arc<dyn TokenRepository>>,
-    Option<Arc<dyn ChannelRepository>>,
-    Option<Arc<dyn LogRepository>>,
-    Option<Arc<dyn PrefillGroupRepository>>,
-) {
+) -> RepoBundle {
     let dsn = config.database.dsn.trim();
     if dsn.is_empty() || dsn.contains("CHANGE_ME") {
-        tracing::warn!("database.dsn 未配置(仍为占位值),跳过数据库连接");
-        return (None, None, None, None, None, None);
+        return RepoBundle::unavailable("database.dsn 未配置(仍为占位值)");
     }
 
     let pools = match DbPools::connect(&config.database).await {
         Ok(pools) => pools,
-        Err(e) => {
-            tracing::warn!(error = %e, "数据库不可用,以降级模式启动");
-            return (None, None, None, None, None, None);
-        }
+        Err(e) => return RepoBundle::unavailable(e.to_string()),
     };
 
     if let Err(e) = pools.migrate().await {
@@ -177,14 +196,15 @@ async fn connect_repositories(
         cache,
         cache_secret: config.session.crypto_secret.clone(),
     });
-    (
-        Some(Arc::new(PgUserRepository::new(ctx.clone()))),
-        Some(Arc::new(PgOptionRepository::new(ctx.clone()))),
-        Some(Arc::new(PgTokenRepository::new(ctx.clone()))),
-        Some(Arc::new(PgChannelRepository::new(ctx.clone()))),
-        Some(Arc::new(PgLogRepository::new(ctx.clone()))),
-        Some(Arc::new(PgPrefillGroupRepository::new(ctx))),
-    )
+    RepoBundle {
+        users: Some(Arc::new(PgUserRepository::new(ctx.clone()))),
+        options: Some(Arc::new(PgOptionRepository::new(ctx.clone()))),
+        tokens: Some(Arc::new(PgTokenRepository::new(ctx.clone()))),
+        channels: Some(Arc::new(PgChannelRepository::new(ctx.clone()))),
+        logs: Some(Arc::new(PgLogRepository::new(ctx.clone()))),
+        prefill_groups: Some(Arc::new(PgPrefillGroupRepository::new(ctx))),
+        error: None,
+    }
 }
 
 /// 中继面每 IP 每分钟限额,可用 `SEA_WEIR_RELAY_RPM` 覆盖(默认 600)。

@@ -47,6 +47,8 @@ pub async fn status(State(state): State<Arc<ServerState>>) -> Response {
         "start_time": state.started,
         "setup": setup,
         "db_ready": state.db_ready(),
+        // 数据库不可用时的原因(Oracle 兼容模式需重建 / 连接被拒等),便于线上直接定位。
+        "db_error": state.db_error,
     }))
 }
 

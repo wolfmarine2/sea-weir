@@ -47,6 +47,8 @@ export interface SystemStatus {
   start_time: number;
   setup: boolean;
   db_ready: boolean;
+  /** 数据库不可用时的原因(后端装配失败信息);可用时为空。 */
+  db_error?: string | null;
   [key: string]: unknown;
 }
 
