@@ -15,6 +15,7 @@ pub mod autoban;
 pub mod billing;
 pub mod channel_cache;
 pub mod convert;
+pub mod estimate;
 pub mod pipeline;
 pub mod protocol;
 pub mod select;

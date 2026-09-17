@@ -225,6 +225,10 @@ fn build_router(state: Arc<ServerState>) -> Router {
             post(handlers::relay::chat_completions),
         )
         .route("/v1/messages", post(handlers::relay::claude_messages))
+        .route(
+            "/v1/messages/count_tokens",
+            post(handlers::relay::claude_count_tokens),
+        )
         .route("/v1/models", get(handlers::relay::list_models))
         .route("/v1/models/{model}", get(handlers::relay::get_model))
         .layer(axum::middleware::from_fn_with_state(
@@ -389,12 +393,16 @@ async fn readyz(State(state): State<Arc<ServerState>>) -> Response {
 }
 
 /// 未实现的业务端点统一 501,避免骨架期返回误导性的成功响应。
-async fn not_implemented() -> Response {
+///
+/// 消息里带上**方法与路径**:客户端报"连接失败"时,一眼能看出它打的是哪个端点,
+/// 不必再靠猜(此前 Anthropic 客户端探 `/v1/messages/count_tokens` 就吃过这个亏)。
+async fn not_implemented(method: axum::http::Method, uri: axum::http::Uri) -> Response {
     (
         StatusCode::NOT_IMPLEMENTED,
-        Json(ApiResponse::<()>::fail(
-            "endpoint not implemented yet (skeleton stage)",
-        )),
+        Json(ApiResponse::<()>::fail(format!(
+            "endpoint not implemented yet (skeleton stage): {method} {}",
+            uri.path()
+        ))),
     )
         .into_response()
 }

@@ -359,6 +359,20 @@ pub async fn chat_completions(
     run_relay(state, auth, RelayFormat::OpenAi, body).await
 }
 
+/// `POST /v1/messages/count_tokens`(TokenAuth):估算输入 token 数。
+///
+/// Anthropic 官方的 token 计数端点,Claude Code / 各类 Anthropic 客户端在**连接检查**
+/// 与会话上下文预算时会调用它。此前未实现 → 落到 501 fallback,客户端显示
+/// "endpoint not implemented yet",看起来像"连不上"。
+/// 网关不做真实分词(Claude 分词器未公开),返回近似估计,不参与计费。
+pub async fn claude_count_tokens(
+    TokenAuth(_auth): TokenAuth,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let input_tokens = sea_weir_core::relay::estimate::estimate_claude_input_tokens(&body);
+    (StatusCode::OK, Json(serde_json::json!({ "input_tokens": input_tokens }))).into_response()
+}
+
 /// `POST /v1/messages`(Claude Messages 入口)。
 pub async fn claude_messages(
     State(state): State<Arc<ServerState>>,
