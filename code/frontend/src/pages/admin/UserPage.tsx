@@ -4,9 +4,10 @@
  * 说明:内部使用不涉及充值,本页不含额度调整。
  * 权限:AdminAuth;root 账号仅 root 可操作(服务端 guard_root 兜底)。
  */
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   App as AntApp,
+  AutoComplete,
   Button,
   Card,
   Form,
@@ -69,6 +70,15 @@ export default function UserPage() {
   const [editOpen, setEditOpen] = useState(false);
   const [editing, setEditing] = useState<User | null>(null);
   const [saving, setSaving] = useState(false);
+  /** 「分组」页维护的分组名,供「分组」字段下拉选择(仍允许直接输入未登记的名称)。 */
+  const [groupOptions, setGroupOptions] = useState<{ value: string }[]>([]);
+
+  useEffect(() => {
+    api.group
+      .list()
+      .then(({ items }) => setGroupOptions(items.map((g) => ({ value: g.name }))))
+      .catch(() => setGroupOptions([]));
+  }, []);
 
   const fetcher = useCallback(
     ({ p, page_size }: { p: number; page_size: number }) => api.user.listUsers({ p, page_size }),
@@ -271,8 +281,19 @@ export default function UserPage() {
           <Form.Item name="display_name" label="显示名">
             <Input />
           </Form.Item>
-          <Form.Item name="group" label="分组">
-            <Input placeholder="default" />
+          <Form.Item
+            name="group"
+            label="分组"
+            tooltip="下拉选择「分组」页维护的分组;也可直接输入尚未登记的名称"
+          >
+            <AutoComplete
+              options={groupOptions}
+              placeholder="default"
+              allowClear
+              filterOption={(input, option) =>
+                String(option?.value ?? '').toLowerCase().includes(input.toLowerCase())
+              }
+            />
           </Form.Item>
         </Form>
       </Modal>
@@ -321,8 +342,18 @@ export default function UserPage() {
           <Form.Item name="display_name" label="显示名">
             <Input />
           </Form.Item>
-          <Form.Item name="group" label="分组">
-            <Input />
+          <Form.Item
+            name="group"
+            label="分组"
+            tooltip="下拉选择「分组」页维护的分组;也可直接输入尚未登记的名称"
+          >
+            <AutoComplete
+              options={groupOptions}
+              allowClear
+              filterOption={(input, option) =>
+                String(option?.value ?? '').toLowerCase().includes(input.toLowerCase())
+              }
+            />
           </Form.Item>
           <Form.Item name="password" label="重置口令(留空则不改)">
             <Input.Password autoComplete="new-password" />
